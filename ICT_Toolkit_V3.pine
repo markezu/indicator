@@ -702,6 +702,15 @@ var int total_wins = 0
 var int total_losses = 0
 var int total_ambiguous = 0
 
+// --- Price Change & Signal Change Detection (vars declared here, computed after SR boost) ---
+var int prev_signal_score = 0
+var string prev_signal_txt = "— WAIT"
+var int prev_ms_trend = 0
+var float prev_close = na
+bool signal_changed = false
+bool trend_changed = false
+bool price_crossed_ote = false
+
 // =============================================================================
 // DYNAMIC DASHBOARD (row count adapts to content)
 // =============================================================================
@@ -1034,6 +1043,35 @@ bool sr_res_hold  = showSR and not na(sr_res_holds) and sr_res_holds
 bool sr_sup_rtest = showSR and not na(sr_bk_res) and sr_bk_res and (not na(sr_res_is_sup) and sr_res_is_sup[1])
 bool sr_res_rtest = showSR and not na(sr_bk_sup) and sr_bk_sup and (not na(sr_sup_is_res) and sr_sup_is_res[1])
 
+// SR confluence boosts signal quality score
+if sr_sup_hold or sr_res_hold
+    signal_score += 1
+if sr_sup_rtest or sr_res_rtest
+    signal_score += 1
+// Recompute signal_txt and signal_col with SR-boosted score
+signal_txt := signal_score >= 7 ? "★ SNIPER" : signal_score >= 5 ? "★ HIGH PROB" : signal_score >= 3 ? "◆ GOOD" : signal_score >= 2 ? "○ MODERATE" : "— WAIT"
+signal_col := signal_score >= 7 ? color.orange : signal_score >= 5 ? color.teal : signal_score >= 3 ? color.green : signal_score >= 2 ? color.gray : color.maroon
+
+// Detect signal/trend/price state transitions (after full score including SR)
+signal_changed := signal_txt != prev_signal_txt
+trend_changed := ms_trend != prev_ms_trend
+if not na(ote_zone_top) and not na(ote_zone_bot)
+    bool was_in_zone = not na(prev_close) and prev_close <= ote_zone_top and prev_close >= ote_zone_bot
+    bool now_in_zone = close <= ote_zone_top and close >= ote_zone_bot
+    price_crossed_ote := was_in_zone != now_in_zone
+if signal_changed and signal_score >= 5
+    alert("Signal UPGRADED to " + signal_txt + " (" + str.tostring(signal_score) + "pts) on " + syminfo.ticker + " " + timeframe.period, alert.freq_once_per_bar)
+if trend_changed and ms_trend != 0
+    string trend_dir = ms_trend == 1 ? "BULLISH" : "BEARISH"
+    alert("Trend CHANGED to " + trend_dir + " on " + syminfo.ticker + " " + timeframe.period, alert.freq_once_per_bar)
+if price_crossed_ote
+    string zone_txt = close <= ote_zone_top and close >= ote_zone_bot ? "ENTERED" : "EXITED"
+    alert("Price " + zone_txt + " OTE Zone on " + syminfo.ticker + " " + timeframe.period, alert.freq_once_per_bar)
+prev_signal_score := signal_score
+prev_signal_txt := signal_txt
+prev_ms_trend := ms_trend
+prev_close := close
+
 // --- OTE Zone & Discount/Premium Detection ---
 float day_eq = not na(prevDayHigh) and not na(prevDayLow) ? (prevDayHigh + prevDayLow) / 2 : na
 bool in_discount = not na(day_eq) and close < day_eq
@@ -1061,47 +1099,91 @@ bool ob_in_discount = not na(day_eq) and near_bull_ob and not na(active_bull_ob_
 bool ob_in_premium  = not na(day_eq) and near_bear_ob and not na(active_bear_ob_bot) and active_bear_ob_bot > day_eq
 
 // =======================================================
-// BUY SIGNALS (V3 — Sweep + BOS + PA confirmed)
+// BUY SIGNALS (V4 — Enhanced Sweep-Based Signal Patterns)
 // =======================================================
+
+// --- SNIPER BUY: Highest conviction --- 
+// S1: Classic ICT — Sweep → BOS → FVG rejection → bullish candle
 bool sniper_buy_1 = recent_ssl_sweep and fast_bos_bull and fvg_rej_bull and bull_candle_confirm
+// S2: Sweep → CISD → OB touch → bullish candle + bull volume
 bool sniper_buy_2 = recent_ssl_sweep and isBuyCISD and near_bull_ob and bull_candle_confirm and has_bull_vol
+// S3: OTE zone + Discount + sweep + FVG/OB + bullish candle
 bool sniper_buy_3 = in_ote_zone and in_discount and recent_ssl_sweep and (has_fvg_confluence or ob_in_ote) and bull_candle_confirm
+// S4: NEW — Sweep + SR support hold + CISD (full institutional confirmation)
+bool sniper_buy_4 = recent_ssl_sweep and sr_sup_hold and isBuyCISD and bull_candle_confirm
+// S5: NEW — Sweep + SR retest + CISD (sweep grabs liquidity, SR retested, CISD confirms)
+bool sniper_buy_5 = recent_ssl_sweep and sr_sup_rtest and isBuyCISD and bull_candle_confirm
 
+// --- STRONG BUY: High quality — 2+ confluences + PA confirmed ---
+// ST1: CISD + FVG CE touch + bullish candle
 bool strong_buy_1 = isBuyCISD and fvg_ce_bull and bull_candle_confirm
+// ST2: Fast BOS bull + OTE zone + FVG/OB + bullish candle
 bool strong_buy_2 = fast_bos_bull and in_ote_zone and (has_fvg_confluence or ob_in_ote) and bull_candle_confirm
+// ST3: Trend bull + FVG/OB in discount + bullish candle
 bool strong_buy_3 = ms_trend == 1 and (fvg_in_discount or ob_in_discount) and bull_candle_confirm
+// ST4: NEW — Sweep before OB/FVG (liquidity grabbed then price enters the zone)
+bool strong_buy_4 = recent_ssl_sweep and (near_bull_ob or fvg_touch_bull) and bull_candle_confirm
+// ST5: NEW — Sweep + SR support hold (sweep below support, support holds = reversal)
+bool strong_buy_5 = recent_ssl_sweep and sr_sup_hold and bull_candle_confirm and not isBuyCISD
+// ST6: NEW — Sweep + SR retest (swept, then price retests the broken-resistance-now-support)
+bool strong_buy_6 = recent_ssl_sweep and sr_sup_rtest and bull_candle_confirm and not isBuyCISD
 
+// --- ALERT BUY: Awareness only (no candle required) ---
 bool alert_buy_1 = sr_sup_hold and (fvg_touch_bull or near_bull_ob)
 bool alert_buy_2 = in_discount and (fvg_touch_bull or near_bull_ob)
+// AL3: NEW — Sweep near SR support (awareness: liquidity taken near support)
+bool alert_buy_3 = recent_ssl_sweep and sr_sup_hold
 
 // =======================================================
-// SELL SIGNALS (V3 — Sweep + BOS + PA confirmed)
+// SELL SIGNALS (V4 — Enhanced Sweep-Based Signal Patterns)
 // =======================================================
+
+// --- SNIPER SELL: Highest conviction ---
+// S1: Classic ICT — Sweep → BOS → FVG rejection → bearish candle
 bool sniper_sell_1 = recent_bsl_sweep and fast_bos_bear and fvg_rej_bear and bear_candle_confirm
+// S2: Sweep → CISD → OB touch → bearish candle + bear volume
 bool sniper_sell_2 = recent_bsl_sweep and isSellCISD and near_bear_ob and bear_candle_confirm and has_bear_vol
+// S3: OTE zone + Premium + sweep + FVG/OB + bearish candle
 bool sniper_sell_3 = in_ote_zone and in_premium and recent_bsl_sweep and (has_fvg_confluence or ob_in_ote) and bear_candle_confirm
+// S4: NEW — Sweep + SR resistance hold + CISD (full institutional confirmation)
+bool sniper_sell_4 = recent_bsl_sweep and sr_res_hold and isSellCISD and bear_candle_confirm
+// S5: NEW — Sweep + SR retest + CISD (sweep grabs liquidity, SR retested, CISD confirms)
+bool sniper_sell_5 = recent_bsl_sweep and sr_res_rtest and isSellCISD and bear_candle_confirm
 
+// --- STRONG SELL: High quality ---
+// ST1: CISD + FVG CE touch + bearish candle
 bool strong_sell_1 = isSellCISD and fvg_ce_bear and bear_candle_confirm
+// ST2: Fast BOS bear + OTE zone + FVG/OB + bearish candle
 bool strong_sell_2 = fast_bos_bear and in_ote_zone and (has_fvg_confluence or ob_in_ote) and bear_candle_confirm
+// ST3: Trend bear + FVG/OB in premium + bearish candle
 bool strong_sell_3 = ms_trend == -1 and (fvg_in_premium or ob_in_premium) and bear_candle_confirm
+// ST4: NEW — Sweep before OB/FVG (liquidity grabbed then price enters the zone)
+bool strong_sell_4 = recent_bsl_sweep and (near_bear_ob or fvg_touch_bear) and bear_candle_confirm
+// ST5: NEW — Sweep + SR resistance hold (sweep above resistance, resistance holds = reversal)
+bool strong_sell_5 = recent_bsl_sweep and sr_res_hold and bear_candle_confirm and not isSellCISD
+// ST6: NEW — Sweep + SR retest (swept, then price retests the broken-support-now-resistance)
+bool strong_sell_6 = recent_bsl_sweep and sr_res_rtest and bear_candle_confirm and not isSellCISD
 
+// --- ALERT SELL: Awareness only ---
 bool alert_sell_1 = sr_res_hold and (fvg_touch_bear or near_bear_ob)
 bool alert_sell_2 = in_premium and (fvg_touch_bear or near_bear_ob)
+// AL3: NEW — Sweep near SR resistance (awareness: liquidity taken near resistance)
+bool alert_sell_3 = recent_bsl_sweep and sr_res_hold
 
 // --- Composite signals ---
-bool is_sniper_buy  = sniper_buy_1 or sniper_buy_2 or sniper_buy_3
-bool is_strong_buy  = (strong_buy_1 or strong_buy_2 or strong_buy_3) and not is_sniper_buy
+bool is_sniper_buy  = sniper_buy_1 or sniper_buy_2 or sniper_buy_3 or sniper_buy_4 or sniper_buy_5
+bool is_strong_buy  = (strong_buy_1 or strong_buy_2 or strong_buy_3 or strong_buy_4 or strong_buy_5 or strong_buy_6) and not is_sniper_buy
 if is_strong_buy and bull_inducement
     is_sniper_buy := true
     is_strong_buy := false
-bool is_alert_buy   = (alert_buy_1 or alert_buy_2) and not is_sniper_buy and not is_strong_buy
+bool is_alert_buy   = (alert_buy_1 or alert_buy_2 or alert_buy_3) and not is_sniper_buy and not is_strong_buy
 
-bool is_sniper_sell = sniper_sell_1 or sniper_sell_2 or sniper_sell_3
-bool is_strong_sell = (strong_sell_1 or strong_sell_2 or strong_sell_3) and not is_sniper_sell
+bool is_sniper_sell = sniper_sell_1 or sniper_sell_2 or sniper_sell_3 or sniper_sell_4 or sniper_sell_5
+bool is_strong_sell = (strong_sell_1 or strong_sell_2 or strong_sell_3 or strong_sell_4 or strong_sell_5 or strong_sell_6) and not is_sniper_sell
 if is_strong_sell and bear_inducement
     is_sniper_sell := true
     is_strong_sell := false
-bool is_alert_sell  = (alert_sell_1 or alert_sell_2) and not is_sniper_sell and not is_strong_sell
+bool is_alert_sell  = (alert_sell_1 or alert_sell_2 or alert_sell_3) and not is_sniper_sell and not is_strong_sell
 
 bool buy_cooldown_ok  = (bar_index - last_buy_signal_bar) >= cooldown_bars
 bool sell_cooldown_ok = (bar_index - last_sell_signal_bar) >= cooldown_bars
@@ -1126,6 +1208,10 @@ f_buy_reason() =>
         r := r + "FVG+"
     if near_bull_ob
         r := r + "OB+"
+    if sr_sup_hold
+        r := r + "SR_HOLD+"
+    if sr_sup_rtest
+        r := r + "SR_RTEST+"
     if bull_candle_confirm
         r := r + (bull_engulf ? "ENG+" : bull_pinbar ? "PIN+" : "BODY+")
     if in_ote_zone
@@ -1158,6 +1244,10 @@ f_sell_reason() =>
         r := r + "FVG+"
     if near_bear_ob
         r := r + "OB+"
+    if sr_res_hold
+        r := r + "SR_HOLD+"
+    if sr_res_rtest
+        r := r + "SR_RTEST+"
     if bear_candle_confirm
         r := r + (bear_engulf ? "ENG+" : bear_pinbar ? "PIN+" : "BODY+")
     if in_ote_zone
@@ -1505,3 +1595,7 @@ alertcondition(any_buy and is_alert_buy, title="○ BUY ALERT", message="BUY ALE
 alertcondition(any_sell and is_alert_sell, title="○ SELL ALERT", message="SELL ALERT on {{ticker}} {{interval}} | Entry: {{close}}")
 alertcondition(any_buy or any_sell, title="ANY SIGNAL", message="Signal on {{ticker}} {{interval}} | Entry: {{close}}")
 alertcondition(buy_timed_out or sell_timed_out, title="TRADE TIMEOUT", message="Trade TIMEOUT on {{ticker}} {{interval}} — no TP1 hit within timeout bars")
+// --- Signal & Price Change Alerts ---
+alertcondition(signal_changed, title="SIGNAL CHANGED", message="Signal state changed on {{ticker}} {{interval}}")
+alertcondition(trend_changed, title="TREND CHANGED", message="Trend changed on {{ticker}} {{interval}}")
+alertcondition(price_crossed_ote, title="OTE ZONE CROSS", message="Price crossed OTE zone boundary on {{ticker}} {{interval}}")
