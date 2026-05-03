@@ -82,6 +82,10 @@ vol_spike_lookback = input.int(5, title="Volatility Spike Lookback (bars)", minv
 // OTE Settings
 ote_tf         = input.string("D", title="OTE Timeframe", options=["D", "W", "M"], tooltip="Which timeframe's high/low to use for OTE retracement bracket", group="OTE Settings")
 
+// Next Structure Projections
+showProjections = input.bool(true, title="Show Next Structure Projections", tooltip="Draw forward-looking lines showing where BOS, CHoCH, CISD, and OB would trigger", group="Projections")
+proj_extend     = input.int(30, title="Projection Extend (bars forward)", minval=5, maxval=100, group="Projections")
+
 // Advanced Tuning
 ob_validity_bars   = input.int(30, title="OB Validity (bars)", minval=5, maxval=200, tooltip="How many bars an OB remains valid before expiring", group="Advanced Tuning")
 ob_extension_bars  = input.int(15, title="OB Box Extension (bars)", minval=5, maxval=100, group="Advanced Tuning")
@@ -790,6 +794,116 @@ if barstate.islast and showTrendDash
 
 color bar_col = ms_trend == 1 ? color.new(color.teal, 40) : ms_trend == -1 ? color.new(color.maroon, 40) : na
 barcolor(showBarColor ? bar_col : na)
+
+// =============================================================================
+// NEXT STRUCTURE PROJECTIONS (Forward-looking price levels)
+// =============================================================================
+var line proj_bos_bull_line = na
+var line proj_bos_bear_line = na
+var line proj_cisd_buy_line = na
+var line proj_cisd_sell_line = na
+var box proj_pend_bull_ob = na
+var box proj_pend_bear_ob = na
+var label proj_bos_bull_lbl = na
+var label proj_bos_bear_lbl = na
+var label proj_cisd_buy_lbl = na
+var label proj_cisd_sell_lbl = na
+var label proj_pend_bull_ob_lbl = na
+var label proj_pend_bear_ob_lbl = na
+var line[] proj_fvg_lines = array.new_line()
+var label[] proj_fvg_labels = array.new_label()
+
+if barstate.islast and showProjections
+    // Clean up previous projections
+    line.delete(proj_bos_bull_line)
+    line.delete(proj_bos_bear_line)
+    line.delete(proj_cisd_buy_line)
+    line.delete(proj_cisd_sell_line)
+    box.delete(proj_pend_bull_ob)
+    box.delete(proj_pend_bear_ob)
+    label.delete(proj_bos_bull_lbl)
+    label.delete(proj_bos_bear_lbl)
+    label.delete(proj_cisd_buy_lbl)
+    label.delete(proj_cisd_sell_lbl)
+    label.delete(proj_pend_bull_ob_lbl)
+    label.delete(proj_pend_bear_ob_lbl)
+    if array.size(proj_fvg_lines) > 0
+        for j = 0 to array.size(proj_fvg_lines) - 1
+            line.delete(array.get(proj_fvg_lines, j))
+        array.clear(proj_fvg_lines)
+    if array.size(proj_fvg_labels) > 0
+        for j = 0 to array.size(proj_fvg_labels) - 1
+            label.delete(array.get(proj_fvg_labels, j))
+        array.clear(proj_fvg_labels)
+
+    int x_now = bar_index
+    int x_fwd = bar_index + proj_extend
+
+    // --- Next BOS levels ---
+    // Bullish BOS: price needs to break above ms_lastHH (if trend is already bull, it's a continuation BOS)
+    if not na(ms_lastHH)
+        color bos_up_col = ms_trend == 1 ? color.new(color.teal, 40) : color.new(color.blue, 40)
+        string bos_up_txt = ms_trend == 1 ? "→ Next BOS ▲" : "→ Next CHoCH ▲"
+        proj_bos_bull_line := line.new(x_now, ms_lastHH, x_fwd, ms_lastHH, color=bos_up_col, style=line.style_dotted, width=2)
+        proj_bos_bull_lbl := label.new(x_fwd, ms_lastHH, text=bos_up_txt + "\n" + str.tostring(ms_lastHH, format.mintick), color=color.new(bos_up_col, 20), textcolor=color.white, style=label.style_label_left, size=size.tiny)
+
+    // Bearish BOS: price needs to break below ms_lastLL (if trend is already bear, it's a continuation BOS)
+    if not na(ms_lastLL)
+        color bos_dn_col = ms_trend == -1 ? color.new(color.maroon, 40) : color.new(color.purple, 40)
+        string bos_dn_txt = ms_trend == -1 ? "→ Next BOS ▼" : "→ Next CHoCH ▼"
+        proj_bos_bear_line := line.new(x_now, ms_lastLL, x_fwd, ms_lastLL, color=bos_dn_col, style=line.style_dotted, width=2)
+        proj_bos_bear_lbl := label.new(x_fwd, ms_lastLL, text=bos_dn_txt + "\n" + str.tostring(ms_lastLL, format.mintick), color=color.new(bos_dn_col, 20), textcolor=color.white, style=label.style_label_left, size=size.tiny)
+
+    // --- Next CISD trigger levels ---
+    // Buy CISD: triggers when price closes above ph_val
+    if buy_active and not na(ph_val) and ph_fresh
+        proj_cisd_buy_line := line.new(x_now, ph_val, x_fwd, ph_val, color=color.new(color.green, 50), style=line.style_dashed, width=1)
+        proj_cisd_buy_lbl := label.new(x_fwd, ph_val, text="→ CISD BUY trigger\n" + str.tostring(ph_val, format.mintick), color=color.new(color.green, 30), textcolor=color.white, style=label.style_label_left, size=size.tiny)
+
+    // Sell CISD: triggers when price closes below pl_val
+    if sell_active and not na(pl_val) and pl_fresh
+        proj_cisd_sell_line := line.new(x_now, pl_val, x_fwd, pl_val, color=color.new(color.red, 50), style=line.style_dashed, width=1)
+        proj_cisd_sell_lbl := label.new(x_fwd, pl_val, text="→ CISD SELL trigger\n" + str.tostring(pl_val, format.mintick), color=color.new(color.red, 30), textcolor=color.white, style=label.style_label_left, size=size.tiny)
+
+    // --- Pending OB zones (where OB will form when CISD triggers) ---
+    if buy_active and not na(pending_bull_ob_top) and not na(pending_bull_ob_bot) and pl_fresh
+        proj_pend_bull_ob := box.new(left=x_now, top=pending_bull_ob_top, right=x_fwd, bottom=pending_bull_ob_bot, border_color=color.new(color.teal, 60), bgcolor=color.new(color.teal, 90), border_style=line.style_dashed)
+        proj_pend_bull_ob_lbl := label.new(x_fwd, (pending_bull_ob_top + pending_bull_ob_bot) / 2, text="→ Pending BULL OB", color=color.new(color.teal, 50), textcolor=color.white, style=label.style_label_left, size=size.tiny)
+
+    if sell_active and not na(pending_bear_ob_top) and not na(pending_bear_ob_bot) and ph_fresh
+        proj_pend_bear_ob := box.new(left=x_now, top=pending_bear_ob_top, right=x_fwd, bottom=pending_bear_ob_bot, border_color=color.new(color.maroon, 60), bgcolor=color.new(color.maroon, 90), border_style=line.style_dashed)
+        proj_pend_bear_ob_lbl := label.new(x_fwd, (pending_bear_ob_top + pending_bear_ob_bot) / 2, text="→ Pending BEAR OB", color=color.new(color.maroon, 50), textcolor=color.white, style=label.style_label_left, size=size.tiny)
+
+    // --- Nearest unmitigated FVGs (price may revisit) ---
+    if array.size(fvg_array) > 0
+        float nearest_bull_dist = 1e10
+        float nearest_bear_dist = 1e10
+        int nearest_bull_idx = -1
+        int nearest_bear_idx = -1
+        for i = 0 to array.size(fvg_array) - 1
+            fp = array.get(fvg_array, i)
+            if fp.is_bull
+                float dist = math.abs(close - fp.top)
+                if dist < nearest_bull_dist
+                    nearest_bull_dist := dist
+                    nearest_bull_idx := i
+            else
+                float dist = math.abs(close - fp.bottom)
+                if dist < nearest_bear_dist
+                    nearest_bear_dist := dist
+                    nearest_bear_idx := i
+        if nearest_bull_idx >= 0
+            fp = array.get(fvg_array, nearest_bull_idx)
+            array.push(proj_fvg_lines, line.new(x_now, fp.top, x_fwd, fp.top, color=color.new(color.green, 60), style=line.style_dotted, width=1))
+            array.push(proj_fvg_lines, line.new(x_now, fp.bottom, x_fwd, fp.bottom, color=color.new(color.green, 60), style=line.style_dotted, width=1))
+            array.push(proj_fvg_labels, label.new(x_fwd, (fp.top + fp.bottom) / 2, text="→ Nearest BULL FVG", color=color.new(color.green, 50), textcolor=color.white, style=label.style_label_left, size=size.tiny))
+        if nearest_bear_idx >= 0
+            fp = array.get(fvg_array, nearest_bear_idx)
+            array.push(proj_fvg_lines, line.new(x_now, fp.top, x_fwd, fp.top, color=color.new(color.red, 60), style=line.style_dotted, width=1))
+            array.push(proj_fvg_lines, line.new(x_now, fp.bottom, x_fwd, fp.bottom, color=color.new(color.red, 60), style=line.style_dotted, width=1))
+            array.push(proj_fvg_labels, label.new(x_fwd, (fp.top + fp.bottom) / 2, text="→ Nearest BEAR FVG", color=color.new(color.red, 50), textcolor=color.white, style=label.style_label_left, size=size.tiny))
+
+    // Next Sweep targets are already shown as undrawn BSL/SSL lines
 
 // =============================================================================
 // SUPPORT & RESISTANCE (HIGH VOLUME BOXES) [ChartPrime]
