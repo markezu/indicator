@@ -423,43 +423,46 @@ var int last_ssl_sweep_bar = 0
 var float last_bsl_sweep_price = na
 var float last_ssl_sweep_price = na
 
-if showLocalLiq
-    if not na(ph)
-        l_obj = line.new(x1=bar_index[pivotLen], y1=ph, x2=bar_index, y2=ph, color=color.new(color.red, 0), style=line.style_solid)
-        lbl_obj = label.new(x=bar_index, y=ph, text=timeframe.period + " BSL\n(Undrawn)", color=color.new(color.red, 40), textcolor=color.white, style=label.style_label_down, size=size.tiny)
-        array.push(liq_array, LiqPoint.new(ph, true, l_obj, lbl_obj))
-    if not na(pl)
-        l_obj = line.new(x1=bar_index[pivotLen], y1=pl, x2=bar_index, y2=pl, color=color.new(color.green, 0), style=line.style_solid)
-        lbl_obj = label.new(x=bar_index, y=pl, text=timeframe.period + " SSL\n(Undrawn)", color=color.new(color.green, 40), textcolor=color.white, style=label.style_label_up, size=size.tiny)
-        array.push(liq_array, LiqPoint.new(pl, false, l_obj, lbl_obj))
-    if array.size(liq_array) > liq_max_count
-        oldest = array.get(liq_array, 0)
-        line.delete(oldest.l)
-        label.delete(oldest.lbl)
-        array.remove(liq_array, 0)
-    // Single consolidated pass: extend lines, detect sweeps, update tracker, clean up
-    if array.size(liq_array) > 0
-        for i = array.size(liq_array) - 1 to 0
-            lp = array.get(liq_array, i)
+// Liquidity tracking always runs (sweep detection feeds the signal engine)
+// Visual rendering (lines/labels) only when showLocalLiq is enabled
+if not na(ph)
+    line l_obj = showLocalLiq ? line.new(x1=bar_index[pivotLen], y1=ph, x2=bar_index, y2=ph, color=color.new(color.red, 0), style=line.style_solid) : na
+    label lbl_obj = showLocalLiq ? label.new(x=bar_index, y=ph, text=timeframe.period + " BSL\n(Undrawn)", color=color.new(color.red, 40), textcolor=color.white, style=label.style_label_down, size=size.tiny) : na
+    array.push(liq_array, LiqPoint.new(ph, true, l_obj, lbl_obj))
+if not na(pl)
+    line l_obj = showLocalLiq ? line.new(x1=bar_index[pivotLen], y1=pl, x2=bar_index, y2=pl, color=color.new(color.green, 0), style=line.style_solid) : na
+    label lbl_obj = showLocalLiq ? label.new(x=bar_index, y=pl, text=timeframe.period + " SSL\n(Undrawn)", color=color.new(color.green, 40), textcolor=color.white, style=label.style_label_up, size=size.tiny) : na
+    array.push(liq_array, LiqPoint.new(pl, false, l_obj, lbl_obj))
+if array.size(liq_array) > liq_max_count
+    oldest = array.get(liq_array, 0)
+    line.delete(oldest.l)
+    label.delete(oldest.lbl)
+    array.remove(liq_array, 0)
+// Single consolidated pass: extend lines, detect sweeps, update tracker, clean up
+if array.size(liq_array) > 0
+    for i = array.size(liq_array) - 1 to 0
+        lp = array.get(liq_array, i)
+        if showLocalLiq
             line.set_x2(lp.l, bar_index)
             label.set_x(lp.lbl, bar_index)
-            bool swept = false
-            if lp.is_bsl and high > lp.price
-                swept := true
-                last_bsl_sweep_bar := bar_index
-                last_bsl_sweep_price := lp.price
-            else if not lp.is_bsl and low < lp.price
-                swept := true
-                last_ssl_sweep_bar := bar_index
-                last_ssl_sweep_price := lp.price
-            if swept
+        bool swept = false
+        if lp.is_bsl and high > lp.price
+            swept := true
+            last_bsl_sweep_bar := bar_index
+            last_bsl_sweep_price := lp.price
+        else if not lp.is_bsl and low < lp.price
+            swept := true
+            last_ssl_sweep_bar := bar_index
+            last_ssl_sweep_price := lp.price
+        if swept
+            if showLocalLiq
                 if lp.is_bsl
                     label.new(bar_index, high, text=timeframe.period + " ▼ BSL Sweep", color=color.new(color.red, 20), textcolor=color.white, style=label.style_label_down, size=size.tiny)
                 else
                     label.new(bar_index, low, text=timeframe.period + " ▲ SSL Sweep", color=color.new(color.green, 20), textcolor=color.white, style=label.style_label_up, size=size.tiny)
-                line.delete(lp.l)
-                label.delete(lp.lbl)
-                array.remove(liq_array, i)
+            line.delete(lp.l)
+            label.delete(lp.lbl)
+            array.remove(liq_array, i)
 
 // =============================================================================
 // MARKET STRUCTURE (BOS / CHoCH)
@@ -611,7 +614,7 @@ bool has_bear_vol = vol_delta < 0 and math.abs(vol_delta) > math.abs(nz(vol_delt
 int est_hour = hour(time, "America/New_York")
 bool in_london_kz = est_hour >= kz_london_start and est_hour < kz_london_end
 bool in_ny_kz     = est_hour >= kz_ny_start and est_hour < kz_ny_end
-bool in_asia_kz   = use_asia_kz and (est_hour >= kz_asia_start or est_hour < kz_asia_end)
+bool in_asia_kz   = use_asia_kz and (kz_asia_start > kz_asia_end ? (est_hour >= kz_asia_start or est_hour < kz_asia_end) : (est_hour >= kz_asia_start and est_hour < kz_asia_end))
 bool in_kill_zone = not use_kz or in_london_kz or in_ny_kz or (use_asia_kz and in_asia_kz)
 
 // =============================================================================
