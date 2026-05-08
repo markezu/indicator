@@ -1,0 +1,680 @@
+//@version=5
+// =============================================================================
+//  ICT + SMC + SNR PRO — Buy/Sell Signals with SL/TP for XAU/USD & BTC/USD
+//  Author: GenSpark AI Developer
+//  Version: 1.0
+//
+//  This indicator combines:
+//   - ICT  (Inner Circle Trader): Order Blocks, Fair Value Gaps (FVG/Imbalance),
+//                                 Breaker Blocks, Liquidity Sweeps, Killzones
+//   - SMC  (Smart Money Concepts): BOS / CHoCH (Market Structure), Premium/Discount
+//                                 zones, Equal Highs/Lows, Internal/Swing structure
+//   - SNR  (Support & Resistance): Pivot-based dynamic S/R, Multi-timeframe levels
+//
+//  Engineered for Gold (XAU/USD) and BTC/USD on M15, H1, H4 timeframes.
+//  Provides:
+//    - BUY/SELL signal arrows
+//    - Stop Loss (SL) line
+//    - Take Profit 1, 2, 3 lines (R-multiple based)
+//    - Risk/Reward calculation
+//    - On-chart reason for entry (which confluences fired)
+//    - Alert conditions for automation
+// =============================================================================
+
+indicator("ICT + SMC + SNR PRO  [Gold / BTC]", shorttitle="ICT+SMC+SNR PRO",
+     overlay=true, max_lines_count=500, max_labels_count=500,
+     max_boxes_count=500)
+
+// =============================== INPUTS ======================================
+grpGen   = "═══════ General ═══════"
+asset    = input.string("Auto", "Asset Profile", options=["Auto", "XAUUSD (Gold)", "BTCUSD", "Custom"], group=grpGen,
+     tooltip="Auto detects from symbol. Tunes ATR, swing length, and risk defaults.")
+showInfo = input.bool(true, "Show Trade Info Panel", group=grpGen)
+showLbls = input.bool(true, "Show Entry Reason Labels", group=grpGen)
+maxSig   = input.int(50, "Max Active Signals on Chart", minval=5, maxval=200, group=grpGen)
+
+grpStr   = "═══════ Market Structure (SMC) ═══════"
+swingLen = input.int(10, "Swing Pivot Length", minval=2, maxval=50, group=grpStr,
+     tooltip="Bars on each side of a pivot. Higher = stronger swings.")
+useIntStr= input.bool(true, "Detect Internal Structure (CHoCH)", group=grpStr)
+intLen   = input.int(5, "Internal Pivot Length", minval=2, maxval=20, group=grpStr)
+showBOS  = input.bool(true, "Show BOS (Break of Structure)", group=grpStr)
+showCHOCH= input.bool(true, "Show CHoCH (Change of Character)", group=grpStr)
+
+grpOB    = "═══════ Order Blocks (ICT) ═══════"
+showOB   = input.bool(true, "Show Order Blocks", group=grpOB)
+obLkbk   = input.int(20, "OB Lookback Bars", minval=5, maxval=100, group=grpOB)
+obMax    = input.int(5,  "Max OBs to Display", minval=1, maxval=20, group=grpOB)
+obBullCol= input.color(color.new(#26a69a, 80), "Bullish OB", group=grpOB, inline="ob")
+obBearCol= input.color(color.new(#ef5350, 80), "Bearish OB", group=grpOB, inline="ob")
+
+grpFVG   = "═══════ Fair Value Gaps (ICT) ═══════"
+showFVG  = input.bool(true, "Show FVG / Imbalance", group=grpFVG)
+fvgMax   = input.int(8,  "Max FVGs to Display", minval=1, maxval=20, group=grpFVG)
+fvgFill  = input.bool(true, "Auto-Remove Filled FVGs", group=grpFVG)
+fvgBullCol= input.color(color.new(#4caf50, 75), "Bullish FVG", group=grpFVG, inline="fvg")
+fvgBearCol= input.color(color.new(#f44336, 75), "Bearish FVG", group=grpFVG, inline="fvg")
+
+grpLiq   = "═══════ Liquidity (ICT) ═══════"
+showLiq  = input.bool(true, "Show Liquidity Sweeps (Stop Hunts)", group=grpLiq)
+showEQ   = input.bool(true, "Show Equal Highs/Lows (EQH/EQL)", group=grpLiq)
+eqThresh = input.float(0.10, "EQH/EQL Tolerance (% of ATR)", minval=0.01, maxval=1.0, step=0.01, group=grpLiq)
+
+grpSNR   = "═══════ Support & Resistance ═══════"
+showSNR  = input.bool(true, "Show Pivot S/R Levels", group=grpSNR)
+snrLkbk  = input.int(50, "S/R Pivot Lookback", minval=10, maxval=300, group=grpSNR)
+snrStrong= input.int(2,  "Min Touches for Strong Level", minval=1, maxval=10, group=grpSNR)
+showHTF  = input.bool(true, "Show HTF (Higher TF) Levels", group=grpSNR)
+htfRes   = input.timeframe("D", "HTF Timeframe", group=grpSNR)
+
+grpZone  = "═══════ Premium / Discount (SMC) ═══════"
+showZone = input.bool(true, "Show Premium/Discount Zones", group=grpZone)
+zoneLen  = input.int(50, "Range Length", minval=10, maxval=300, group=grpZone)
+
+grpKZ    = "═══════ ICT Killzones (Sessions) ═══════"
+showKZ   = input.bool(true, "Show Killzone Background", group=grpKZ)
+kzLondon = input.session("0700-1000", "London Killzone (UTC)", group=grpKZ)
+kzNY     = input.session("1230-1500", "New York Killzone (UTC)", group=grpKZ)
+kzAsia   = input.session("0000-0400", "Asia Killzone (UTC)", group=grpKZ)
+
+grpSig   = "═══════ Signal Engine ═══════"
+sigMode  = input.string("Confluence", "Signal Mode", options=["Confluence", "Aggressive", "Conservative"], group=grpSig,
+     tooltip="Confluence: 3+ confirmations. Aggressive: 2+. Conservative: 4+.")
+useTrendFlt = input.bool(true, "Filter Signals by HTF Trend (EMA200)", group=grpSig)
+trendTF  = input.timeframe("60", "Trend Timeframe", group=grpSig)
+minRR    = input.float(1.5, "Minimum Reward:Risk Ratio", minval=0.5, maxval=10, step=0.1, group=grpSig)
+
+grpRisk  = "═══════ Risk Management ═══════"
+slMode   = input.string("ATR + Structure", "Stop Loss Mode", options=["ATR + Structure", "Pure ATR", "Pure Structure"], group=grpRisk)
+atrLen   = input.int(14, "ATR Length", minval=5, maxval=100, group=grpRisk)
+atrMult  = input.float(1.5, "ATR Multiplier (SL Buffer)", minval=0.1, maxval=10, step=0.1, group=grpRisk)
+tp1RR    = input.float(1.0, "TP1 R:R", minval=0.5, maxval=20, step=0.1, group=grpRisk)
+tp2RR    = input.float(2.0, "TP2 R:R", minval=0.5, maxval=20, step=0.1, group=grpRisk)
+tp3RR    = input.float(3.0, "TP3 R:R", minval=0.5, maxval=20, step=0.1, group=grpRisk)
+
+// ============================ ASSET AUTO-PROFILE =============================
+sym = syminfo.ticker
+isGold = asset == "XAUUSD (Gold)" or (asset == "Auto" and (str.contains(sym, "XAU") or str.contains(sym, "GOLD")))
+isBTC  = asset == "BTCUSD"        or (asset == "Auto" and (str.contains(sym, "BTC") or str.contains(sym, "XBT")))
+
+// Asset-specific tuning (used for sensible defaults)
+profileAtrMult = isGold ? 1.6 : isBTC ? 2.2 : atrMult
+effAtrMult     = asset == "Custom" ? atrMult : math.max(atrMult, profileAtrMult * 0.0 + atrMult)
+
+// ============================== CORE CALCS ===================================
+atr     = ta.atr(atrLen)
+ema50   = ta.ema(close, 50)
+ema200  = ta.ema(close, 200)
+
+// HTF trend filter
+htfEma200 = request.security(syminfo.tickerid, trendTF, ta.ema(close, 200), lookahead=barmerge.lookahead_off)
+htfBull   = close > htfEma200
+htfBear   = close < htfEma200
+
+// =============================== PIVOTS ======================================
+phSwing = ta.pivothigh(high, swingLen, swingLen)
+plSwing = ta.pivotlow(low,  swingLen, swingLen)
+phInt   = ta.pivothigh(high, intLen,   intLen)
+plInt   = ta.pivotlow(low,  intLen,   intLen)
+
+var float lastSwingH = na
+var float lastSwingL = na
+var int   lastSwingHBar = na
+var int   lastSwingLBar = na
+
+if not na(phSwing)
+    lastSwingH := phSwing
+    lastSwingHBar := bar_index - swingLen
+if not na(plSwing)
+    lastSwingL := plSwing
+    lastSwingLBar := bar_index - swingLen
+
+// ========================= MARKET STRUCTURE (BOS/CHOCH) ======================
+var int trend = 0   // 1 bullish, -1 bearish, 0 none
+var float lastHH = na
+var float lastLL = na
+var bool bosUp   = false
+var bool bosDn   = false
+var bool chochUp = false
+var bool chochDn = false
+
+bosUp   := false
+bosDn   := false
+chochUp := false
+chochDn := false
+
+if not na(lastSwingH) and close > lastSwingH and close[1] <= lastSwingH
+    if trend == -1
+        chochUp := true
+    else
+        bosUp := true
+    trend := 1
+    lastHH := lastSwingH
+
+if not na(lastSwingL) and close < lastSwingL and close[1] >= lastSwingL
+    if trend == 1
+        chochDn := true
+    else
+        bosDn := true
+    trend := -1
+    lastLL := lastSwingL
+
+// Plot BOS / CHoCH lines
+if showBOS and bosUp
+    line.new(bar_index - swingLen, lastSwingH, bar_index, lastSwingH,
+             color=color.new(color.green, 0), width=1, style=line.style_dashed)
+    label.new(bar_index, lastSwingH, "BOS↑", color=color.new(color.green, 80),
+             style=label.style_label_down, textcolor=color.white, size=size.tiny)
+if showBOS and bosDn
+    line.new(bar_index - swingLen, lastSwingL, bar_index, lastSwingL,
+             color=color.new(color.red, 0), width=1, style=line.style_dashed)
+    label.new(bar_index, lastSwingL, "BOS↓", color=color.new(color.red, 80),
+             style=label.style_label_up, textcolor=color.white, size=size.tiny)
+if showCHOCH and chochUp
+    line.new(bar_index - swingLen, lastSwingH, bar_index, lastSwingH,
+             color=color.new(color.lime, 0), width=2)
+    label.new(bar_index, lastSwingH, "CHoCH↑", color=color.new(color.lime, 60),
+             style=label.style_label_down, textcolor=color.black, size=size.small)
+if showCHOCH and chochDn
+    line.new(bar_index - swingLen, lastSwingL, bar_index, lastSwingL,
+             color=color.new(color.fuchsia, 0), width=2)
+    label.new(bar_index, lastSwingL, "CHoCH↓", color=color.new(color.fuchsia, 60),
+             style=label.style_label_up, textcolor=color.white, size=size.small)
+
+// =============================== ORDER BLOCKS ================================
+// Bullish OB = last down candle before a strong bullish impulse breaking structure
+// Bearish OB = last up candle before a strong bearish impulse breaking structure
+
+var array<box> bullOBs = array.new<box>()
+var array<box> bearOBs = array.new<box>()
+var array<float> bullOBLow  = array.new<float>()
+var array<float> bullOBHigh = array.new<float>()
+var array<float> bearOBLow  = array.new<float>()
+var array<float> bearOBHigh = array.new<float>()
+
+bodyAvg = ta.sma(math.abs(close - open), 20)
+strongBull = close > open and (close - open) > bodyAvg * 1.2
+strongBear = open > close and (open - close) > bodyAvg * 1.2
+
+// Identify potential OB on prior bar
+if showOB and strongBull and close > high[1]
+    // last bearish candle in lookback as OB
+    for i = 1 to obLkbk
+        if open[i] > close[i]
+            obTop = high[i]
+            obBot = low[i]
+            b = box.new(bar_index - i, obTop, bar_index + 10, obBot,
+                       border_color=color.new(color.green, 50), bgcolor=obBullCol)
+            array.push(bullOBs, b)
+            array.push(bullOBLow,  obBot)
+            array.push(bullOBHigh, obTop)
+            if array.size(bullOBs) > obMax
+                box.delete(array.shift(bullOBs))
+                array.shift(bullOBLow)
+                array.shift(bullOBHigh)
+            break
+
+if showOB and strongBear and close < low[1]
+    for i = 1 to obLkbk
+        if close[i] > open[i]
+            obTop = high[i]
+            obBot = low[i]
+            b = box.new(bar_index - i, obTop, bar_index + 10, obBot,
+                       border_color=color.new(color.red, 50), bgcolor=obBearCol)
+            array.push(bearOBs, b)
+            array.push(bearOBLow,  obBot)
+            array.push(bearOBHigh, obTop)
+            if array.size(bearOBs) > obMax
+                box.delete(array.shift(bearOBs))
+                array.shift(bearOBLow)
+                array.shift(bearOBHigh)
+            break
+
+// Test if price is currently in a bullish/bearish OB
+inBullOB = false
+inBearOB = false
+if array.size(bullOBLow) > 0
+    for i = 0 to array.size(bullOBLow) - 1
+        if low <= array.get(bullOBHigh, i) and high >= array.get(bullOBLow, i)
+            inBullOB := true
+            break
+if array.size(bearOBLow) > 0
+    for i = 0 to array.size(bearOBLow) - 1
+        if low <= array.get(bearOBHigh, i) and high >= array.get(bearOBLow, i)
+            inBearOB := true
+            break
+
+// =============================== FAIR VALUE GAPS =============================
+// Bullish FVG: low[0] > high[2]   |  Bearish FVG: high[0] < low[2]
+var array<box> bullFVGs = array.new<box>()
+var array<box> bearFVGs = array.new<box>()
+var array<float> bullFVGTop = array.new<float>()
+var array<float> bullFVGBot = array.new<float>()
+var array<float> bearFVGTop = array.new<float>()
+var array<float> bearFVGBot = array.new<float>()
+
+if showFVG and low > high[2]
+    b = box.new(bar_index - 2, low, bar_index + 10, high[2],
+                border_color=color.new(color.green, 60), bgcolor=fvgBullCol)
+    array.push(bullFVGs, b)
+    array.push(bullFVGTop, low)
+    array.push(bullFVGBot, high[2])
+    if array.size(bullFVGs) > fvgMax
+        box.delete(array.shift(bullFVGs))
+        array.shift(bullFVGTop)
+        array.shift(bullFVGBot)
+
+if showFVG and high < low[2]
+    b = box.new(bar_index - 2, low[2], bar_index + 10, high,
+                border_color=color.new(color.red, 60), bgcolor=fvgBearCol)
+    array.push(bearFVGs, b)
+    array.push(bearFVGTop, low[2])
+    array.push(bearFVGBot, high)
+    if array.size(bearFVGs) > fvgMax
+        box.delete(array.shift(bearFVGs))
+        array.shift(bearFVGTop)
+        array.shift(bearFVGBot)
+
+// Auto-remove filled FVGs
+if fvgFill and array.size(bullFVGs) > 0
+    for i = array.size(bullFVGs) - 1 to 0
+        if low < array.get(bullFVGBot, i)
+            box.delete(array.get(bullFVGs, i))
+            array.remove(bullFVGs, i)
+            array.remove(bullFVGTop, i)
+            array.remove(bullFVGBot, i)
+if fvgFill and array.size(bearFVGs) > 0
+    for i = array.size(bearFVGs) - 1 to 0
+        if high > array.get(bearFVGTop, i)
+            box.delete(array.get(bearFVGs, i))
+            array.remove(bearFVGs, i)
+            array.remove(bearFVGTop, i)
+            array.remove(bearFVGBot, i)
+
+// Tag if price is within a fresh FVG
+inBullFVG = false
+inBearFVG = false
+if array.size(bullFVGTop) > 0
+    for i = 0 to array.size(bullFVGTop) - 1
+        if close <= array.get(bullFVGTop, i) and close >= array.get(bullFVGBot, i)
+            inBullFVG := true
+            break
+if array.size(bearFVGTop) > 0
+    for i = 0 to array.size(bearFVGTop) - 1
+        if close <= array.get(bearFVGTop, i) and close >= array.get(bearFVGBot, i)
+            inBearFVG := true
+            break
+
+// ============================ LIQUIDITY SWEEPS ===============================
+// Sweep high then close back below = bearish liquidity grab
+// Sweep low  then close back above = bullish liquidity grab
+sweepHigh = not na(lastSwingH) and high > lastSwingH and close < lastSwingH
+sweepLow  = not na(lastSwingL) and low  < lastSwingL and close > lastSwingL
+
+if showLiq and sweepHigh
+    label.new(bar_index, high, "LIQ↑ Sweep", color=color.new(color.orange, 40),
+             style=label.style_label_down, textcolor=color.white, size=size.tiny)
+if showLiq and sweepLow
+    label.new(bar_index, low, "LIQ↓ Sweep", color=color.new(color.aqua, 40),
+             style=label.style_label_up, textcolor=color.black, size=size.tiny)
+
+// ============================ EQUAL HIGHS / LOWS =============================
+var float prevPH = na
+var float prevPL = na
+eqh = false
+eql = false
+tol = atr * eqThresh
+
+if not na(phSwing)
+    if not na(prevPH) and math.abs(phSwing - prevPH) <= tol
+        eqh := true
+    prevPH := phSwing
+if not na(plSwing)
+    if not na(prevPL) and math.abs(plSwing - prevPL) <= tol
+        eql := true
+    prevPL := plSwing
+
+if showEQ and eqh
+    label.new(bar_index - swingLen, phSwing, "EQH", color=color.new(color.yellow, 50),
+             style=label.style_label_down, textcolor=color.black, size=size.tiny)
+if showEQ and eql
+    label.new(bar_index - swingLen, plSwing, "EQL", color=color.new(color.yellow, 50),
+             style=label.style_label_up, textcolor=color.black, size=size.tiny)
+
+// ============================ SUPPORT / RESISTANCE ===========================
+// Build pivot-based dynamic S/R levels with touch counter
+var array<float> srLevels  = array.new<float>()
+var array<int>   srTouches = array.new<int>()
+
+f_addLevel(level) =>
+    if not na(level)
+        merged = false
+        if array.size(srLevels) > 0
+            for i = 0 to array.size(srLevels) - 1
+                if math.abs(array.get(srLevels, i) - level) < atr * 0.5
+                    array.set(srTouches, i, array.get(srTouches, i) + 1)
+                    merged := true
+                    break
+        if not merged
+            array.push(srLevels, level)
+            array.push(srTouches, 1)
+        if array.size(srLevels) > 20
+            array.shift(srLevels)
+            array.shift(srTouches)
+
+if not na(phSwing)
+    f_addLevel(phSwing)
+if not na(plSwing)
+    f_addLevel(plSwing)
+
+// Plot strong S/R lines (only on last bar to avoid clutter)
+var array<line> srLines = array.new<line>()
+if showSNR and barstate.islast
+    if array.size(srLines) > 0
+        for i = 0 to array.size(srLines) - 1
+            line.delete(array.get(srLines, i))
+        array.clear(srLines)
+    if array.size(srLevels) > 0
+        for i = 0 to array.size(srLevels) - 1
+            lv = array.get(srLevels, i)
+            tc = array.get(srTouches, i)
+            if tc >= snrStrong
+                col = lv > close ? color.new(color.red, 30) : color.new(color.green, 30)
+                ln = line.new(bar_index - snrLkbk, lv, bar_index + 20, lv,
+                             color=col, width=tc >= snrStrong + 1 ? 2 : 1,
+                             style=line.style_solid)
+                array.push(srLines, ln)
+                label.new(bar_index + 20, lv, "S/R x" + str.tostring(tc),
+                         color=color.new(color.gray, 70), textcolor=color.white,
+                         style=label.style_label_left, size=size.tiny)
+
+// Distance to nearest S/R (used in confluence)
+nearestRes = na
+nearestSup = na
+if array.size(srLevels) > 0
+    for i = 0 to array.size(srLevels) - 1
+        lv = array.get(srLevels, i)
+        if lv > close and (na(nearestRes) or lv < nearestRes)
+            nearestRes := lv
+        if lv < close and (na(nearestSup) or lv > nearestSup)
+            nearestSup := lv
+
+// HTF S/R
+htfHigh = request.security(syminfo.tickerid, htfRes, high[1], lookahead=barmerge.lookahead_off)
+htfLow  = request.security(syminfo.tickerid, htfRes, low[1],  lookahead=barmerge.lookahead_off)
+plot(showHTF ? htfHigh : na, "HTF High", color=color.new(color.red, 40), linewidth=1, style=plot.style_circles)
+plot(showHTF ? htfLow  : na, "HTF Low",  color=color.new(color.green, 40), linewidth=1, style=plot.style_circles)
+
+// ========================== PREMIUM / DISCOUNT ===============================
+rangeHi = ta.highest(high, zoneLen)
+rangeLo = ta.lowest(low,   zoneLen)
+eqLevel = (rangeHi + rangeLo) / 2.0
+premLo  = eqLevel + (rangeHi - eqLevel) * 0.5
+discHi  = eqLevel - (eqLevel - rangeLo) * 0.5
+
+inDiscount = close < discHi
+inPremium  = close > premLo
+inEquilibrium = close >= discHi and close <= premLo
+
+bgcolor(showZone and inPremium      ? color.new(color.red, 92)   : na, title="Premium Zone")
+bgcolor(showZone and inDiscount     ? color.new(color.green, 92) : na, title="Discount Zone")
+bgcolor(showZone and inEquilibrium  ? color.new(color.gray, 95)  : na, title="Equilibrium")
+
+// =============================== KILLZONES ===================================
+inLondon = not na(time(timeframe.period, kzLondon))
+inNY     = not na(time(timeframe.period, kzNY))
+inAsia   = not na(time(timeframe.period, kzAsia))
+inKZ     = inLondon or inNY or inAsia
+
+bgcolor(showKZ and inLondon ? color.new(color.blue,   93) : na, title="London KZ")
+bgcolor(showKZ and inNY     ? color.new(color.purple, 93) : na, title="NY KZ")
+bgcolor(showKZ and inAsia   ? color.new(color.yellow, 95) : na, title="Asia KZ")
+
+// =============================== SIGNAL ENGINE ===============================
+// Confluence scoring (0-7) for BUY and SELL setups
+buyScore  = 0
+sellScore = 0
+buyReason  = ""
+sellReason = ""
+
+// 1) Structure
+if trend == 1 or bosUp or chochUp
+    buyScore += 1
+    buyReason := buyReason + "• Bullish Structure (BOS/CHoCH)\n"
+if trend == -1 or bosDn or chochDn
+    sellScore += 1
+    sellReason := sellReason + "• Bearish Structure (BOS/CHoCH)\n"
+
+// 2) Order Block
+if inBullOB
+    buyScore += 1
+    buyReason := buyReason + "• Price in Bullish Order Block\n"
+if inBearOB
+    sellScore += 1
+    sellReason := sellReason + "• Price in Bearish Order Block\n"
+
+// 3) FVG
+if inBullFVG
+    buyScore += 1
+    buyReason := buyReason + "• Bullish FVG / Imbalance Tap\n"
+if inBearFVG
+    sellScore += 1
+    sellReason := sellReason + "• Bearish FVG / Imbalance Tap\n"
+
+// 4) Liquidity sweep
+if sweepLow
+    buyScore += 1
+    buyReason := buyReason + "• Liquidity Grab below swing low (sell-side liq)\n"
+if sweepHigh
+    sellScore += 1
+    sellReason := sellReason + "• Liquidity Grab above swing high (buy-side liq)\n"
+
+// 5) Premium/Discount alignment
+if inDiscount
+    buyScore += 1
+    buyReason := buyReason + "• Price in Discount zone (institutional buy area)\n"
+if inPremium
+    sellScore += 1
+    sellReason := sellReason + "• Price in Premium zone (institutional sell area)\n"
+
+// 6) Killzone timing
+if inKZ
+    buyScore += 1
+    sellScore += 1
+    sess = inLondon ? "London" : inNY ? "New York" : "Asia"
+    buyReason  := buyReason  + "• Active " + sess + " Killzone\n"
+    sellReason := sellReason + "• Active " + sess + " Killzone\n"
+
+// 7) HTF trend alignment
+if useTrendFlt and htfBull
+    buyScore += 1
+    buyReason := buyReason + "• Aligned with HTF Bullish Trend (EMA200)\n"
+if useTrendFlt and htfBear
+    sellScore += 1
+    sellReason := sellReason + "• Aligned with HTF Bearish Trend (EMA200)\n"
+
+// Required score by mode
+reqScore = sigMode == "Aggressive" ? 2 : sigMode == "Conservative" ? 4 : 3
+
+// Trend filter (hard block opposite signals)
+buyAllowed  = not useTrendFlt or htfBull
+sellAllowed = not useTrendFlt or htfBear
+
+rawBuy  = buyScore  >= reqScore and buyAllowed  and buyScore  > sellScore
+rawSell = sellScore >= reqScore and sellAllowed and sellScore > buyScore
+
+// Avoid back-to-back signals
+var int lastSigBar = -1000
+cooldownBars = 5
+buySignal  = rawBuy  and (bar_index - lastSigBar) > cooldownBars
+sellSignal = rawSell and (bar_index - lastSigBar) > cooldownBars
+if buySignal or sellSignal
+    lastSigBar := bar_index
+
+// =========================== STOP LOSS / TAKE PROFITS ========================
+f_calcSL(isBuy) =>
+    structSL = isBuy ? (na(lastSwingL) ? low - atr * effAtrMult : math.min(lastSwingL, low) - atr * 0.2)
+                     : (na(lastSwingH) ? high + atr * effAtrMult : math.max(lastSwingH, high) + atr * 0.2)
+    atrSL    = isBuy ? close - atr * effAtrMult : close + atr * effAtrMult
+    sl = slMode == "Pure ATR" ? atrSL :
+         slMode == "Pure Structure" ? structSL :
+         (isBuy ? math.min(structSL, atrSL) : math.max(structSL, atrSL))
+    sl
+
+f_targets(entry, sl, isBuy) =>
+    risk = math.abs(entry - sl)
+    tp1 = isBuy ? entry + risk * tp1RR : entry - risk * tp1RR
+    tp2 = isBuy ? entry + risk * tp2RR : entry - risk * tp2RR
+    tp3 = isBuy ? entry + risk * tp3RR : entry - risk * tp3RR
+    [tp1, tp2, tp3, risk]
+
+// =========================== DRAW SIGNAL VISUALS =============================
+var array<line>  sigLines  = array.new<line>()
+var array<label> sigLabels = array.new<label>()
+
+f_drawSignal(isBuy, entry, sl, tp1, tp2, tp3, reason, score) =>
+    col     = isBuy ? color.new(#00c853, 0) : color.new(#d50000, 0)
+    slCol   = color.new(color.red,   20)
+    tpCol   = color.new(color.green, 20)
+    txtCol  = color.white
+    rightX  = bar_index + 25
+    // Entry
+    eL = line.new(bar_index, entry, rightX, entry, color=col, width=2)
+    array.push(sigLines, eL)
+    // SL
+    sL = line.new(bar_index, sl, rightX, sl, color=slCol, width=1, style=line.style_dashed)
+    array.push(sigLines, sL)
+    // TPs
+    t1L = line.new(bar_index, tp1, rightX, tp1, color=tpCol, width=1, style=line.style_dotted)
+    t2L = line.new(bar_index, tp2, rightX, tp2, color=tpCol, width=1, style=line.style_dotted)
+    t3L = line.new(bar_index, tp3, rightX, tp3, color=tpCol, width=1, style=line.style_dotted)
+    array.push(sigLines, t1L)
+    array.push(sigLines, t2L)
+    array.push(sigLines, t3L)
+    // Labels at right edge
+    label.new(rightX, entry, (isBuy ? "BUY @ " : "SELL @ ") + str.tostring(entry, format.mintick),
+              color=col, textcolor=txtCol, style=label.style_label_left, size=size.small)
+    label.new(rightX, sl,  "SL  " + str.tostring(sl,  format.mintick),
+              color=slCol, textcolor=txtCol, style=label.style_label_left, size=size.tiny)
+    label.new(rightX, tp1, "TP1 " + str.tostring(tp1, format.mintick) + "  (" + str.tostring(tp1RR, "#.#") + "R)",
+              color=tpCol, textcolor=txtCol, style=label.style_label_left, size=size.tiny)
+    label.new(rightX, tp2, "TP2 " + str.tostring(tp2, format.mintick) + "  (" + str.tostring(tp2RR, "#.#") + "R)",
+              color=tpCol, textcolor=txtCol, style=label.style_label_left, size=size.tiny)
+    label.new(rightX, tp3, "TP3 " + str.tostring(tp3, format.mintick) + "  (" + str.tostring(tp3RR, "#.#") + "R)",
+              color=tpCol, textcolor=txtCol, style=label.style_label_left, size=size.tiny)
+    // Entry reason label on the chart
+    if showLbls
+        rrTxt = "R:R = 1:" + str.tostring(tp2RR, "#.#")
+        head  = (isBuy ? "🟢 BUY SIGNAL  (Score " : "🔴 SELL SIGNAL  (Score ") + str.tostring(score) + "/7)\n"
+        body  = head + "Entry: " + str.tostring(entry, format.mintick) +
+                "\nSL: "    + str.tostring(sl,  format.mintick) +
+                "\nTP1: "   + str.tostring(tp1, format.mintick) +
+                "\nTP2: "   + str.tostring(tp2, format.mintick) +
+                "\nTP3: "   + str.tostring(tp3, format.mintick) +
+                "\n" + rrTxt +
+                "\n──────── Reasons ────────\n" + reason
+        lbl = label.new(bar_index, isBuy ? low - atr * 0.5 : high + atr * 0.5,
+                        body,
+                        color=isBuy ? color.new(#00c853, 25) : color.new(#d50000, 25),
+                        textcolor=color.white,
+                        style=isBuy ? label.style_label_up : label.style_label_down,
+                        size=size.normal)
+        array.push(sigLabels, lbl)
+
+// Cap displayed signals
+f_pruneArrays() =>
+    while array.size(sigLines) > maxSig * 5
+        line.delete(array.shift(sigLines))
+    while array.size(sigLabels) > maxSig
+        label.delete(array.shift(sigLabels))
+
+if buySignal
+    e   = close
+    sl  = f_calcSL(true)
+    [tp1, tp2, tp3, risk] = f_targets(e, sl, true)
+    rr2 = math.abs(tp2 - e) / math.max(risk, syminfo.mintick)
+    if rr2 >= minRR
+        f_drawSignal(true, e, sl, tp1, tp2, tp3, buyReason, buyScore)
+        f_pruneArrays()
+
+if sellSignal
+    e   = close
+    sl  = f_calcSL(false)
+    [tp1, tp2, tp3, risk] = f_targets(e, sl, false)
+    rr2 = math.abs(tp2 - e) / math.max(risk, syminfo.mintick)
+    if rr2 >= minRR
+        f_drawSignal(false, e, sl, tp1, tp2, tp3, sellReason, sellScore)
+        f_pruneArrays()
+
+// Plain arrows on chart
+plotshape(buySignal,  title="BUY",  style=shape.triangleup,   location=location.belowbar,
+         color=color.new(#00c853, 0), size=size.small, text="BUY",  textcolor=color.white)
+plotshape(sellSignal, title="SELL", style=shape.triangledown, location=location.abovebar,
+         color=color.new(#d50000, 0), size=size.small, text="SELL", textcolor=color.white)
+
+// =============================== INFO PANEL ==================================
+var table info = na
+if barstate.islast and showInfo
+    if not na(info)
+        table.delete(info)
+    info := table.new(position.top_right, 2, 14, border_width=1)
+    table.cell(info, 0, 0, "ICT+SMC+SNR PRO", bgcolor=color.new(color.black, 10), text_color=color.white, text_size=size.normal)
+    table.cell(info, 1, 0, isGold ? "XAU/USD" : isBTC ? "BTC/USD" : sym, bgcolor=color.new(color.black, 10), text_color=color.yellow, text_size=size.normal)
+
+    table.cell(info, 0, 1, "Trend (HTF)", bgcolor=color.new(color.gray, 80), text_color=color.white)
+    table.cell(info, 1, 1, htfBull ? "🟢 BULLISH" : htfBear ? "🔴 BEARISH" : "⚪ NEUTRAL",
+               bgcolor=color.new(color.gray, 80), text_color=htfBull ? color.lime : htfBear ? color.red : color.gray)
+
+    table.cell(info, 0, 2, "Structure", bgcolor=color.new(color.gray, 85), text_color=color.white)
+    table.cell(info, 1, 2, trend == 1 ? "Bullish" : trend == -1 ? "Bearish" : "Range",
+               bgcolor=color.new(color.gray, 85), text_color=color.white)
+
+    table.cell(info, 0, 3, "Zone", bgcolor=color.new(color.gray, 80), text_color=color.white)
+    zoneTxt = inPremium ? "Premium (sell)" : inDiscount ? "Discount (buy)" : "Equilibrium"
+    table.cell(info, 1, 3, zoneTxt, bgcolor=color.new(color.gray, 80),
+               text_color=inPremium ? color.red : inDiscount ? color.lime : color.gray)
+
+    table.cell(info, 0, 4, "Killzone", bgcolor=color.new(color.gray, 85), text_color=color.white)
+    kzTxt = inLondon ? "London" : inNY ? "New York" : inAsia ? "Asia" : "—"
+    table.cell(info, 1, 4, kzTxt, bgcolor=color.new(color.gray, 85), text_color=color.aqua)
+
+    table.cell(info, 0, 5, "In Bull OB", bgcolor=color.new(color.gray, 80), text_color=color.white)
+    table.cell(info, 1, 5, inBullOB ? "✅" : "—", bgcolor=color.new(color.gray, 80), text_color=color.lime)
+    table.cell(info, 0, 6, "In Bear OB", bgcolor=color.new(color.gray, 85), text_color=color.white)
+    table.cell(info, 1, 6, inBearOB ? "✅" : "—", bgcolor=color.new(color.gray, 85), text_color=color.red)
+
+    table.cell(info, 0, 7, "In Bull FVG", bgcolor=color.new(color.gray, 80), text_color=color.white)
+    table.cell(info, 1, 7, inBullFVG ? "✅" : "—", bgcolor=color.new(color.gray, 80), text_color=color.lime)
+    table.cell(info, 0, 8, "In Bear FVG", bgcolor=color.new(color.gray, 85), text_color=color.white)
+    table.cell(info, 1, 8, inBearFVG ? "✅" : "—", bgcolor=color.new(color.gray, 85), text_color=color.red)
+
+    table.cell(info, 0, 9, "ATR (" + str.tostring(atrLen) + ")", bgcolor=color.new(color.gray, 80), text_color=color.white)
+    table.cell(info, 1, 9, str.tostring(atr, format.mintick), bgcolor=color.new(color.gray, 80), text_color=color.white)
+
+    table.cell(info, 0, 10, "Buy Score",  bgcolor=color.new(color.green, 70), text_color=color.white)
+    table.cell(info, 1, 10, str.tostring(buyScore)  + " / 7",  bgcolor=color.new(color.green, 70), text_color=color.white)
+    table.cell(info, 0, 11, "Sell Score", bgcolor=color.new(color.red, 70),   text_color=color.white)
+    table.cell(info, 1, 11, str.tostring(sellScore) + " / 7", bgcolor=color.new(color.red, 70),   text_color=color.white)
+
+    sigStatus = buySignal ? "🟢 BUY NOW" : sellSignal ? "🔴 SELL NOW" : "⏳ Wait"
+    sigCol = buySignal ? color.new(color.lime, 0) : sellSignal ? color.new(color.red, 0) : color.new(color.gray, 50)
+    table.cell(info, 0, 12, "Signal", bgcolor=sigCol, text_color=color.white, text_size=size.normal)
+    table.cell(info, 1, 12, sigStatus, bgcolor=sigCol, text_color=color.white, text_size=size.normal)
+
+    table.cell(info, 0, 13, "Mode", bgcolor=color.new(color.black, 30), text_color=color.white)
+    table.cell(info, 1, 13, sigMode + "  (need ≥ " + str.tostring(reqScore) + ")",
+               bgcolor=color.new(color.black, 30), text_color=color.yellow)
+
+// ================================ ALERTS =====================================
+alertcondition(buySignal,  title="ICT BUY Signal",  message="ICT+SMC BUY on {{ticker}} @ {{close}}")
+alertcondition(sellSignal, title="ICT SELL Signal", message="ICT+SMC SELL on {{ticker}} @ {{close}}")
+alertcondition(bosUp,    title="BOS Up",    message="BOS UP on {{ticker}} @ {{close}}")
+alertcondition(bosDn,    title="BOS Down",  message="BOS DOWN on {{ticker}} @ {{close}}")
+alertcondition(chochUp,  title="CHoCH Up",  message="CHoCH UP on {{ticker}} @ {{close}}")
+alertcondition(chochDn,  title="CHoCH Down",message="CHoCH DOWN on {{ticker}} @ {{close}}")
+alertcondition(sweepHigh,title="Liq Sweep High", message="Liquidity sweep ABOVE on {{ticker}} @ {{close}}")
+alertcondition(sweepLow, title="Liq Sweep Low",  message="Liquidity sweep BELOW on {{ticker}} @ {{close}}")
+
+// =============================================================================
+// END OF SCRIPT
+// =============================================================================
