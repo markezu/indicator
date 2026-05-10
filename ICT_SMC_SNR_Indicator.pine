@@ -2,7 +2,7 @@
 // =============================================================================
 //  ICT + SMC + SNR PRO — Buy/Sell Signals with SL/TP for XAU/USD & BTC/USD
 //  Author: GenSpark AI Developer
-//  Version: 1.0
+//  Version: 2.0
 //
 //  This indicator combines:
 //   - ICT  (Inner Circle Trader): Order Blocks, Fair Value Gaps (FVG/Imbalance),
@@ -10,6 +10,8 @@
 //   - SMC  (Smart Money Concepts): BOS / CHoCH (Market Structure), Premium/Discount
 //                                 zones, Equal Highs/Lows, Internal/Swing structure
 //   - SNR  (Support & Resistance): Pivot-based dynamic S/R, Multi-timeframe levels
+//   - LS+CISD+IFVG: Liquidity Sweep + Change in State of Delivery + Inversion FVG
+//                   (high-probability "Inversion Entry Model")
 //
 //  Engineered for Gold (XAU/USD) and BTC/USD on M15, H1, H4 timeframes.
 //  Provides:
@@ -54,6 +56,17 @@ fvgMax   = input.int(8,  "Max FVGs to Display", minval=1, maxval=20, group=grpFV
 fvgFill  = input.bool(true, "Auto-Remove Filled FVGs", group=grpFVG)
 fvgBullCol= input.color(color.new(#4caf50, 75), "Bullish FVG", group=grpFVG, inline="fvg")
 fvgBearCol= input.color(color.new(#f44336, 75), "Bearish FVG", group=grpFVG, inline="fvg")
+
+grpIFVG  = "═══════ Inversion FVG / CISD (LS+CISD+FVG Model) ═══════"
+showIFVG = input.bool(true, "Show Inversion FVG (IFVG)", group=grpIFVG,
+     tooltip="A failed FVG that flips role: bullish FVG broken → bearish supply (and vice-versa). Core of the LS+CISD+FVG model.")
+ifvgMax  = input.int(6,  "Max IFVGs to Display", minval=1, maxval=15, group=grpIFVG)
+ifvgLkbk = input.int(20, "Liquidity Sweep Lookback (bars)", minval=5, maxval=100, group=grpIFVG,
+     tooltip="How many bars back to look for the swept BSL/SSL that validates the IFVG entry.")
+ifvgRequireSweep = input.bool(true, "Require Recent Liquidity Sweep before IFVG", group=grpIFVG,
+     tooltip="When ON, only print IFVG signals if a BSL/SSL sweep occurred within lookback (full LS+CISD+FVG model).")
+ifvgBullCol = input.color(color.new(#ec407a, 70), "Bullish IFVG (was Bearish FVG)", group=grpIFVG, inline="ifvg")
+ifvgBearCol = input.color(color.new(#ec407a, 70), "Bearish IFVG (was Bullish FVG)", group=grpIFVG, inline="ifvg")
 
 grpLiq   = "═══════ Liquidity (ICT) ═══════"
 showLiq  = input.bool(true, "Show Liquidity Sweeps (Stop Hunts)", group=grpLiq)
@@ -246,12 +259,27 @@ if array.size(bearOBLow) > 0
 
 // =============================== FAIR VALUE GAPS =============================
 // Bullish FVG: low[0] > high[2]   |  Bearish FVG: high[0] < low[2]
-var array<box> bullFVGs = array.new<box>()
-var array<box> bearFVGs = array.new<box>()
+//
+// When an FVG is *violated* (price closes through it), it does NOT just disappear.
+// It INVERTS: a bullish FVG that fails becomes a bearish IFVG (resistance), and a
+// bearish FVG that fails becomes a bullish IFVG (support). This is the CISD —
+// Change in State of Delivery — and the heart of the LS+CISD+FVG entry model.
+var array<box>   bullFVGs   = array.new<box>()
+var array<box>   bearFVGs   = array.new<box>()
 var array<float> bullFVGTop = array.new<float>()
 var array<float> bullFVGBot = array.new<float>()
 var array<float> bearFVGTop = array.new<float>()
 var array<float> bearFVGBot = array.new<float>()
+
+// Inversion FVG (IFVG) storage. bullIFVG = was-bear FVG that flipped to support.
+var array<box>   bullIFVGs    = array.new<box>()
+var array<box>   bearIFVGs    = array.new<box>()
+var array<float> bullIFVGTop  = array.new<float>()
+var array<float> bullIFVGBot  = array.new<float>()
+var array<int>   bullIFVGBar  = array.new<int>()
+var array<float> bearIFVGTop  = array.new<float>()
+var array<float> bearIFVGBot  = array.new<float>()
+var array<int>   bearIFVGBar  = array.new<int>()
 
 if showFVG and low > high[2]
     b = box.new(bar_index - 2, low, bar_index + 10, high[2],
@@ -275,21 +303,85 @@ if showFVG and high < low[2]
         array.shift(bearFVGTop)
         array.shift(bearFVGBot)
 
-// Auto-remove filled FVGs
-if fvgFill and array.size(bullFVGs) > 0
+// Detect FVG violation → INVERSION (CISD).
+// Bullish FVG violated when CLOSE goes below its bottom edge → creates BEARISH IFVG.
+if array.size(bullFVGs) > 0
     for i = array.size(bullFVGs) - 1 to 0
-        if low < array.get(bullFVGBot, i)
+        botLvl = array.get(bullFVGBot, i)
+        topLvl = array.get(bullFVGTop, i)
+        if close < botLvl
+            // Inversion: this zone is now BEARISH supply
             box.delete(array.get(bullFVGs, i))
             array.remove(bullFVGs, i)
             array.remove(bullFVGTop, i)
             array.remove(bullFVGBot, i)
-if fvgFill and array.size(bearFVGs) > 0
+            if showIFVG
+                ib = box.new(bar_index, topLvl, bar_index + 15, botLvl,
+                             border_color=color.new(#ec407a, 30),
+                             border_width=2,
+                             bgcolor=ifvgBearCol)
+                array.push(bearIFVGs, ib)
+                array.push(bearIFVGTop, topLvl)
+                array.push(bearIFVGBot, botLvl)
+                array.push(bearIFVGBar, bar_index)
+                label.new(bar_index, topLvl, "IFVG↓ (CISD)",
+                         color=color.new(#ec407a, 30),
+                         textcolor=color.white,
+                         style=label.style_label_down,
+                         size=size.tiny)
+                if array.size(bearIFVGs) > ifvgMax
+                    box.delete(array.shift(bearIFVGs))
+                    array.shift(bearIFVGTop)
+                    array.shift(bearIFVGBot)
+                    array.shift(bearIFVGBar)
+
+// Bearish FVG violated when CLOSE goes above its top edge → creates BULLISH IFVG.
+if array.size(bearFVGs) > 0
     for i = array.size(bearFVGs) - 1 to 0
-        if high > array.get(bearFVGTop, i)
+        botLvl = array.get(bearFVGBot, i)
+        topLvl = array.get(bearFVGTop, i)
+        if close > topLvl
             box.delete(array.get(bearFVGs, i))
             array.remove(bearFVGs, i)
             array.remove(bearFVGTop, i)
             array.remove(bearFVGBot, i)
+            if showIFVG
+                ib = box.new(bar_index, topLvl, bar_index + 15, botLvl,
+                             border_color=color.new(#ec407a, 30),
+                             border_width=2,
+                             bgcolor=ifvgBullCol)
+                array.push(bullIFVGs, ib)
+                array.push(bullIFVGTop, topLvl)
+                array.push(bullIFVGBot, botLvl)
+                array.push(bullIFVGBar, bar_index)
+                label.new(bar_index, botLvl, "IFVG↑ (CISD)",
+                         color=color.new(#ec407a, 30),
+                         textcolor=color.white,
+                         style=label.style_label_up,
+                         size=size.tiny)
+                if array.size(bullIFVGs) > ifvgMax
+                    box.delete(array.shift(bullIFVGs))
+                    array.shift(bullIFVGTop)
+                    array.shift(bullIFVGBot)
+                    array.shift(bullIFVGBar)
+
+// Invalidate IFVGs that are themselves violated (price closes back through them)
+if array.size(bullIFVGs) > 0
+    for i = array.size(bullIFVGs) - 1 to 0
+        if close < array.get(bullIFVGBot, i)
+            box.delete(array.get(bullIFVGs, i))
+            array.remove(bullIFVGs, i)
+            array.remove(bullIFVGTop, i)
+            array.remove(bullIFVGBot, i)
+            array.remove(bullIFVGBar, i)
+if array.size(bearIFVGs) > 0
+    for i = array.size(bearIFVGs) - 1 to 0
+        if close > array.get(bearIFVGTop, i)
+            box.delete(array.get(bearIFVGs, i))
+            array.remove(bearIFVGs, i)
+            array.remove(bearIFVGTop, i)
+            array.remove(bearIFVGBot, i)
+            array.remove(bearIFVGBar, i)
 
 // Tag if price is within a fresh FVG
 inBullFVG = false
@@ -305,17 +397,54 @@ if array.size(bearFVGTop) > 0
             inBearFVG := true
             break
 
+// Tag if price is within a fresh IFVG (Inversion FVG) — RETRACEMENT into CISD zone
+inBullIFVG = false
+inBearIFVG = false
+bullIFVGtop = na
+bullIFVGbot = na
+bearIFVGtop = na
+bearIFVGbot = na
+if array.size(bullIFVGTop) > 0
+    for i = 0 to array.size(bullIFVGTop) - 1
+        if low <= array.get(bullIFVGTop, i) and high >= array.get(bullIFVGBot, i)
+            inBullIFVG := true
+            bullIFVGtop := array.get(bullIFVGTop, i)
+            bullIFVGbot := array.get(bullIFVGBot, i)
+            break
+if array.size(bearIFVGTop) > 0
+    for i = 0 to array.size(bearIFVGTop) - 1
+        if low <= array.get(bearIFVGTop, i) and high >= array.get(bearIFVGBot, i)
+            inBearIFVG := true
+            bearIFVGtop := array.get(bearIFVGTop, i)
+            bearIFVGbot := array.get(bearIFVGBot, i)
+            break
+
 // ============================ LIQUIDITY SWEEPS ===============================
-// Sweep high then close back below = bearish liquidity grab
-// Sweep low  then close back above = bullish liquidity grab
+// Sweep high then close back below = bearish liquidity grab (BSL taken)
+// Sweep low  then close back above = bullish liquidity grab (SSL taken)
 sweepHigh = not na(lastSwingH) and high > lastSwingH and close < lastSwingH
 sweepLow  = not na(lastSwingL) and low  < lastSwingL and close > lastSwingL
 
+// Track recent sweeps for the LS+CISD+FVG model
+var int lastBSLSweepBar = -10000
+var int lastSSLSweepBar = -10000
+var float lastBSLSweptLevel = na
+var float lastSSLSweptLevel = na
+if sweepHigh
+    lastBSLSweepBar := bar_index
+    lastBSLSweptLevel := lastSwingH
+if sweepLow
+    lastSSLSweepBar := bar_index
+    lastSSLSweptLevel := lastSwingL
+
+recentBSLSweep = (bar_index - lastBSLSweepBar) <= ifvgLkbk
+recentSSLSweep = (bar_index - lastSSLSweepBar) <= ifvgLkbk
+
 if showLiq and sweepHigh
-    label.new(bar_index, high, "LIQ↑ Sweep", color=color.new(color.orange, 40),
+    label.new(bar_index, high, "BSL Sweep", color=color.new(color.orange, 40),
              style=label.style_label_down, textcolor=color.white, size=size.tiny)
 if showLiq and sweepLow
-    label.new(bar_index, low, "LIQ↓ Sweep", color=color.new(color.aqua, 40),
+    label.new(bar_index, low, "SSL Sweep", color=color.new(color.aqua, 40),
              style=label.style_label_up, textcolor=color.black, size=size.tiny)
 
 // ============================ EQUAL HIGHS / LOWS =============================
@@ -431,7 +560,7 @@ bgcolor(showKZ and inNY     ? color.new(color.purple, 93) : na, title="NY KZ")
 bgcolor(showKZ and inAsia   ? color.new(color.yellow, 95) : na, title="Asia KZ")
 
 // =============================== SIGNAL ENGINE ===============================
-// Confluence scoring (0-7) for BUY and SELL setups
+// Confluence scoring (0-9) for BUY and SELL setups
 buyScore  = 0
 sellScore = 0
 buyReason  = ""
@@ -462,12 +591,12 @@ if inBearFVG
     sellReason := sellReason + "• Bearish FVG / Imbalance Tap\n"
 
 // 4) Liquidity sweep
-if sweepLow
+if sweepLow or recentSSLSweep
     buyScore += 1
-    buyReason := buyReason + "• Liquidity Grab below swing low (sell-side liq)\n"
-if sweepHigh
+    buyReason := buyReason + "• SSL grabbed (sell-side liquidity swept)\n"
+if sweepHigh or recentBSLSweep
     sellScore += 1
-    sellReason := sellReason + "• Liquidity Grab above swing high (buy-side liq)\n"
+    sellReason := sellReason + "• BSL grabbed (buy-side liquidity swept)\n"
 
 // 5) Premium/Discount alignment
 if inDiscount
@@ -493,6 +622,27 @@ if useTrendFlt and htfBear
     sellScore += 1
     sellReason := sellReason + "• Aligned with HTF Bearish Trend (EMA200)\n"
 
+// 8) IFVG / CISD — high-weight (counts as 2)
+if inBullIFVG
+    buyScore += 2
+    buyReason := buyReason + "• Inversion FVG TAP (CISD) → bullish flip zone\n"
+if inBearIFVG
+    sellScore += 2
+    sellReason := sellReason + "• Inversion FVG TAP (CISD) → bearish flip zone\n"
+
+// ========================== LS + CISD + FVG MODEL ============================
+// Premium "Inversion Entry Model":
+//   1) Liquidity sweep (BSL or SSL) within last `ifvgLkbk` bars
+//   2) Price now retracing INTO an Inversion FVG zone
+//   3) HTF bias aligned (if filter enabled)
+ifvgBuyModel  = inBullIFVG and (not ifvgRequireSweep or recentSSLSweep) and (not useTrendFlt or htfBull)
+ifvgSellModel = inBearIFVG and (not ifvgRequireSweep or recentBSLSweep) and (not useTrendFlt or htfBear)
+
+if ifvgBuyModel
+    buyReason := buyReason + "★ LS+CISD+FVG MODEL: SSL swept → IFVG retrace → BUY\n"
+if ifvgSellModel
+    sellReason := sellReason + "★ LS+CISD+FVG MODEL: BSL swept → IFVG retrace → SELL\n"
+
 // Required score by mode
 reqScore = sigMode == "Aggressive" ? 2 : sigMode == "Conservative" ? 4 : 3
 
@@ -500,8 +650,13 @@ reqScore = sigMode == "Aggressive" ? 2 : sigMode == "Conservative" ? 4 : 3
 buyAllowed  = not useTrendFlt or htfBull
 sellAllowed = not useTrendFlt or htfBear
 
+// Standard signal
 rawBuy  = buyScore  >= reqScore and buyAllowed  and buyScore  > sellScore
 rawSell = sellScore >= reqScore and sellAllowed and sellScore > buyScore
+
+// IFVG model overrides — fire even with lower confluence because it's a complete setup
+rawBuy  := rawBuy  or ifvgBuyModel
+rawSell := rawSell or ifvgSellModel
 
 // Avoid back-to-back signals
 var int lastSigBar = -1000
@@ -512,13 +667,19 @@ if buySignal or sellSignal
     lastSigBar := bar_index
 
 // =========================== STOP LOSS / TAKE PROFITS ========================
-f_calcSL(isBuy) =>
+// When an Inversion model fires, prefer the IFVG zone edge as SL anchor
+// (matches the rule: "stop loss just beyond the invalidation point").
+f_calcSL(isBuy, useIFVG, ifvgT, ifvgB) =>
     structSL = isBuy ? (na(lastSwingL) ? low - atr * effAtrMult : math.min(lastSwingL, low) - atr * 0.2)
                      : (na(lastSwingH) ? high + atr * effAtrMult : math.max(lastSwingH, high) + atr * 0.2)
     atrSL    = isBuy ? close - atr * effAtrMult : close + atr * effAtrMult
-    sl = slMode == "Pure ATR" ? atrSL :
-         slMode == "Pure Structure" ? structSL :
-         (isBuy ? math.min(structSL, atrSL) : math.max(structSL, atrSL))
+    ifvgSL   = useIFVG ? (isBuy ? ifvgB - atr * 0.2 : ifvgT + atr * 0.2) : na
+    baseSL   = slMode == "Pure ATR" ? atrSL :
+               slMode == "Pure Structure" ? structSL :
+               (isBuy ? math.min(structSL, atrSL) : math.max(structSL, atrSL))
+    // If we have an IFVG anchor, use the tighter-but-valid one
+    sl = na(ifvgSL) ? baseSL :
+         (isBuy ? math.min(baseSL, ifvgSL) : math.max(baseSL, ifvgSL))
     sl
 
 f_targets(entry, sl, isBuy) =>
@@ -590,7 +751,7 @@ f_pruneArrays() =>
 
 if buySignal
     e   = close
-    sl  = f_calcSL(true)
+    sl  = f_calcSL(true, inBullIFVG, bullIFVGtop, bullIFVGbot)
     [tp1, tp2, tp3, risk] = f_targets(e, sl, true)
     rr2 = math.abs(tp2 - e) / math.max(risk, syminfo.mintick)
     if rr2 >= minRR
@@ -599,7 +760,7 @@ if buySignal
 
 if sellSignal
     e   = close
-    sl  = f_calcSL(false)
+    sl  = f_calcSL(false, inBearIFVG, bearIFVGtop, bearIFVGbot)
     [tp1, tp2, tp3, risk] = f_targets(e, sl, false)
     rr2 = math.abs(tp2 - e) / math.max(risk, syminfo.mintick)
     if rr2 >= minRR
@@ -617,7 +778,7 @@ var table info = na
 if barstate.islast and showInfo
     if not na(info)
         table.delete(info)
-    info := table.new(position.top_right, 2, 14, border_width=1)
+    info := table.new(position.top_right, 2, 17, border_width=1)
     table.cell(info, 0, 0, "ICT+SMC+SNR PRO", bgcolor=color.new(color.black, 10), text_color=color.white, text_size=size.normal)
     table.cell(info, 1, 0, isGold ? "XAU/USD" : isBTC ? "BTC/USD" : sym, bgcolor=color.new(color.black, 10), text_color=color.yellow, text_size=size.normal)
 
@@ -648,32 +809,47 @@ if barstate.islast and showInfo
     table.cell(info, 0, 8, "In Bear FVG", bgcolor=color.new(color.gray, 85), text_color=color.white)
     table.cell(info, 1, 8, inBearFVG ? "✅" : "—", bgcolor=color.new(color.gray, 85), text_color=color.red)
 
-    table.cell(info, 0, 9, "ATR (" + str.tostring(atrLen) + ")", bgcolor=color.new(color.gray, 80), text_color=color.white)
-    table.cell(info, 1, 9, str.tostring(atr, format.mintick), bgcolor=color.new(color.gray, 80), text_color=color.white)
+    // IFVG / CISD rows
+    table.cell(info, 0, 9, "Bull IFVG (CISD)", bgcolor=color.new(#ec407a, 75), text_color=color.white)
+    table.cell(info, 1, 9, inBullIFVG ? "✅ TAP" : "—", bgcolor=color.new(#ec407a, 75), text_color=color.white)
+    table.cell(info, 0, 10, "Bear IFVG (CISD)", bgcolor=color.new(#ec407a, 80), text_color=color.white)
+    table.cell(info, 1, 10, inBearIFVG ? "✅ TAP" : "—", bgcolor=color.new(#ec407a, 80), text_color=color.white)
 
-    table.cell(info, 0, 10, "Buy Score",  bgcolor=color.new(color.green, 70), text_color=color.white)
-    table.cell(info, 1, 10, str.tostring(buyScore)  + " / 7",  bgcolor=color.new(color.green, 70), text_color=color.white)
-    table.cell(info, 0, 11, "Sell Score", bgcolor=color.new(color.red, 70),   text_color=color.white)
-    table.cell(info, 1, 11, str.tostring(sellScore) + " / 7", bgcolor=color.new(color.red, 70),   text_color=color.white)
+    table.cell(info, 0, 11, "Recent BSL Sweep", bgcolor=color.new(color.gray, 80), text_color=color.white)
+    table.cell(info, 1, 11, recentBSLSweep ? "✅ (" + str.tostring(bar_index - lastBSLSweepBar) + " bars)" : "—",
+               bgcolor=color.new(color.gray, 80), text_color=color.orange)
+    table.cell(info, 0, 12, "Recent SSL Sweep", bgcolor=color.new(color.gray, 85), text_color=color.white)
+    table.cell(info, 1, 12, recentSSLSweep ? "✅ (" + str.tostring(bar_index - lastSSLSweepBar) + " bars)" : "—",
+               bgcolor=color.new(color.gray, 85), text_color=color.aqua)
 
-    sigStatus = buySignal ? "🟢 BUY NOW" : sellSignal ? "🔴 SELL NOW" : "⏳ Wait"
-    sigCol = buySignal ? color.new(color.lime, 0) : sellSignal ? color.new(color.red, 0) : color.new(color.gray, 50)
-    table.cell(info, 0, 12, "Signal", bgcolor=sigCol, text_color=color.white, text_size=size.normal)
-    table.cell(info, 1, 12, sigStatus, bgcolor=sigCol, text_color=color.white, text_size=size.normal)
+    table.cell(info, 0, 13, "ATR (" + str.tostring(atrLen) + ")", bgcolor=color.new(color.gray, 80), text_color=color.white)
+    table.cell(info, 1, 13, str.tostring(atr, format.mintick), bgcolor=color.new(color.gray, 80), text_color=color.white)
 
-    table.cell(info, 0, 13, "Mode", bgcolor=color.new(color.black, 30), text_color=color.white)
-    table.cell(info, 1, 13, sigMode + "  (need ≥ " + str.tostring(reqScore) + ")",
-               bgcolor=color.new(color.black, 30), text_color=color.yellow)
+    table.cell(info, 0, 14, "Buy Score",  bgcolor=color.new(color.green, 70), text_color=color.white)
+    table.cell(info, 1, 14, str.tostring(buyScore)  + " / 9",  bgcolor=color.new(color.green, 70), text_color=color.white)
+    table.cell(info, 0, 15, "Sell Score", bgcolor=color.new(color.red, 70),   text_color=color.white)
+    table.cell(info, 1, 15, str.tostring(sellScore) + " / 9", bgcolor=color.new(color.red, 70),   text_color=color.white)
+
+    sigStatus = ifvgBuyModel ? "🟢 LS+CISD BUY" : ifvgSellModel ? "🔴 LS+CISD SELL" :
+                buySignal    ? "🟢 BUY NOW"      : sellSignal    ? "🔴 SELL NOW"     : "⏳ Wait"
+    sigCol = (buySignal or ifvgBuyModel) ? color.new(color.lime, 0) :
+             (sellSignal or ifvgSellModel) ? color.new(color.red, 0) : color.new(color.gray, 50)
+    table.cell(info, 0, 16, "Signal", bgcolor=sigCol, text_color=color.white, text_size=size.normal)
+    table.cell(info, 1, 16, sigStatus, bgcolor=sigCol, text_color=color.white, text_size=size.normal)
 
 // ================================ ALERTS =====================================
 alertcondition(buySignal,  title="ICT BUY Signal",  message="ICT+SMC BUY on {{ticker}} @ {{close}}")
 alertcondition(sellSignal, title="ICT SELL Signal", message="ICT+SMC SELL on {{ticker}} @ {{close}}")
+alertcondition(ifvgBuyModel,  title="LS+CISD+FVG BUY",  message="LS+CISD+FVG BUY model on {{ticker}} @ {{close}}")
+alertcondition(ifvgSellModel, title="LS+CISD+FVG SELL", message="LS+CISD+FVG SELL model on {{ticker}} @ {{close}}")
+alertcondition(inBullIFVG, title="Bull IFVG Tap", message="Bullish IFVG (CISD) tapped on {{ticker}} @ {{close}}")
+alertcondition(inBearIFVG, title="Bear IFVG Tap", message="Bearish IFVG (CISD) tapped on {{ticker}} @ {{close}}")
 alertcondition(bosUp,    title="BOS Up",    message="BOS UP on {{ticker}} @ {{close}}")
 alertcondition(bosDn,    title="BOS Down",  message="BOS DOWN on {{ticker}} @ {{close}}")
 alertcondition(chochUp,  title="CHoCH Up",  message="CHoCH UP on {{ticker}} @ {{close}}")
 alertcondition(chochDn,  title="CHoCH Down",message="CHoCH DOWN on {{ticker}} @ {{close}}")
-alertcondition(sweepHigh,title="Liq Sweep High", message="Liquidity sweep ABOVE on {{ticker}} @ {{close}}")
-alertcondition(sweepLow, title="Liq Sweep Low",  message="Liquidity sweep BELOW on {{ticker}} @ {{close}}")
+alertcondition(sweepHigh,title="BSL Sweep", message="BSL sweep on {{ticker}} @ {{close}}")
+alertcondition(sweepLow, title="SSL Sweep", message="SSL sweep on {{ticker}} @ {{close}}")
 
 // =============================================================================
 // END OF SCRIPT

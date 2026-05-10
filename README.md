@@ -1,6 +1,6 @@
-# ICT + SMC + SNR PRO Indicator
+# ICT + SMC + SNR PRO Indicator (v2.0)
 
-A powerful TradingView Pine Script (v5) indicator that combines **Inner Circle Trader (ICT)**, **Smart Money Concepts (SMC)**, and **Support & Resistance (SNR)** logic to deliver **BUY/SELL signals** with **Stop Loss**, **Take Profit (1, 2, 3)**, and **detailed entry reasoning** — engineered specifically for **Gold (XAU/USD)** and **BTC/USD** trading.
+A powerful TradingView Pine Script (v5) indicator that combines **Inner Circle Trader (ICT)**, **Smart Money Concepts (SMC)**, **Support & Resistance (SNR)**, and the high-probability **LS + CISD + FVG (Inversion Entry)** model to deliver **BUY/SELL signals** with **Stop Loss**, **Take Profit (1, 2, 3)**, and **detailed entry reasoning** — engineered specifically for **Gold (XAU/USD)** and **BTC/USD** trading.
 
 > File: [`ICT_SMC_SNR_Indicator.pine`](./ICT_SMC_SNR_Indicator.pine)
 
@@ -11,7 +11,8 @@ A powerful TradingView Pine Script (v5) indicator that combines **Inner Circle T
 ### ICT (Inner Circle Trader) Concepts
 - **Order Blocks (OB)** — Auto-detected bullish/bearish institutional zones
 - **Fair Value Gaps (FVG / Imbalances)** — Auto-drawn, auto-removed when filled
-- **Liquidity Sweeps (Stop Hunts)** — Detects buy-side / sell-side liquidity grabs
+- **Inversion FVG (IFVG) / CISD** — Failed FVGs that flip role (support↔resistance)
+- **Liquidity Sweeps (BSL / SSL)** — Detects buy-side / sell-side stop hunts
 - **Killzones** — London, New York, Asia session highlighting (UTC times)
 
 ### SMC (Smart Money Concepts)
@@ -27,11 +28,24 @@ A powerful TradingView Pine Script (v5) indicator that combines **Inner Circle T
 - Automatic merging of nearby levels (within 0.5×ATR)
 
 ### Signal Engine
-- **7-point confluence scoring system** (Structure, OB, FVG, Liquidity, Premium/Discount, Killzone, HTF Trend)
+- **9-point confluence scoring system** (Structure, OB, FVG, Liquidity, Premium/Discount, Killzone, HTF Trend, IFVG ×2)
 - 3 modes: **Aggressive (≥2)**, **Confluence (≥3)**, **Conservative (≥4)**
+- **Dedicated LS+CISD+FVG override** — fires high-probability inversion entries even at lower confluence
 - HTF EMA200 trend filter
 - Cooldown between signals to avoid noise
 - Minimum R:R filter
+
+### LS + CISD + FVG (Inversion Entry Model) — NEW in v2.0
+The premium high-probability entry model based on the 6-step rule:
+
+1. **HTF bias** confirmed (used only for entry confirmation)
+2. **Liquidity Grab** — price sweeps a previous BSL or SSL (stop hunt)
+3. **Find Inversion** — a failed FVG flips role: support↔resistance (CISD)
+4. **Wait for Retracement** back into the inversion zone
+5. **Entry & SL** — entry at the IFVG, SL just beyond the invalidation point
+6. **Target** — most recent high (for buys) or low (for sells)
+
+The indicator detects every step automatically and prints a dedicated "LS+CISD+FVG" signal when all conditions align.
 
 ### Risk Management
 - **Stop Loss** modes:
@@ -91,17 +105,20 @@ A powerful TradingView Pine Script (v5) indicator that combines **Inner Circle T
 
 ## How Signals Are Generated
 
-A **BUY signal** fires when at least N of the following 7 confluences align (N depends on mode):
+A **BUY signal** fires when at least N of the following 9 confluences align (N depends on mode):
 
 1. **Bullish market structure** (BOS up or CHoCH up)
 2. **Price tapped a Bullish Order Block**
 3. **Price filled a Bullish FVG**
-4. **Sell-side liquidity swept** (price wicked below a swing low and closed back inside)
+4. **Sell-side liquidity (SSL) swept** (price wicked below a swing low and closed back inside) — recent or current
 5. **Price is in the Discount zone** (below 50% of the recent range)
 6. **Active killzone** (London / NY / Asia)
 7. **HTF trend is bullish** (price above HTF EMA200)
+8. **Bullish IFVG / CISD tap** (counts as 2) — price retracing into a flipped FVG zone
 
 A **SELL signal** is the mirror opposite.
+
+**LS+CISD+FVG override:** If the full Inversion Entry model is detected (recent liquidity sweep + IFVG retrace + HTF alignment), a dedicated signal fires regardless of total score.
 
 The signal is **only printed** when:
 - Score ≥ required threshold
@@ -118,6 +135,7 @@ The signal is **only printed** when:
 - **SL (ATR + Structure)** = the **further** of:
   - Last swing low (for buys) / swing high (for sells), with 0.2×ATR buffer
   - `Entry ± ATR × Multiplier`
+- **SL when in IFVG zone** — anchored to the **far edge of the inversion zone** with a small ATR buffer (matches the rule: *"stop loss just beyond the invalidation point"*)
 - **TP1** = Entry ± R × `tp1RR` (default 1.0R)
 - **TP2** = Entry ± R × `tp2RR` (default 2.0R)
 - **TP3** = Entry ± R × `tp3RR` (default 3.0R)
@@ -149,11 +167,12 @@ The top-right table updates every bar:
 
 1. Right-click the chart → **Add Alert**.
 2. Condition: `ICT+SMC+SNR PRO` → choose:
-   - `ICT BUY Signal`
-   - `ICT SELL Signal`
+   - `ICT BUY Signal` / `ICT SELL Signal`
+   - `LS+CISD+FVG BUY` / `LS+CISD+FVG SELL` (premium model)
+   - `Bull IFVG Tap` / `Bear IFVG Tap`
    - `BOS Up / Down`
    - `CHoCH Up / Down`
-   - `Liq Sweep High / Low`
+   - `BSL Sweep` / `SSL Sweep`
 3. Set **frequency** to **Once per bar close** (recommended for clean signals).
 4. Configure webhook / notification as desired.
 
