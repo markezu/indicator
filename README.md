@@ -1,8 +1,20 @@
-# ICT + SMC + SNR PRO Indicator (v2.0)
+# ICT + SMC + SNR PRO Indicator (v3.0)
 
-A powerful TradingView Pine Script (v5) indicator that combines **Inner Circle Trader (ICT)**, **Smart Money Concepts (SMC)**, **Support & Resistance (SNR)**, and the high-probability **LS + CISD + FVG (Inversion Entry)** model to deliver **BUY/SELL signals** with **Stop Loss**, **Take Profit (1, 2, 3)**, and **detailed entry reasoning** — engineered specifically for **Gold (XAU/USD)** and **BTC/USD** trading.
+A powerful TradingView Pine Script (v5) indicator combining **every major institutional trading concept** — Inner Circle Trader (ICT), Smart Money Concepts (SMC), Support & Resistance (SNR), and 4 high-probability premium entry models — to deliver **BUY/SELL signals** with **Stop Loss**, **Take Profit (1, 2, 3)**, and **detailed entry reasoning** — engineered specifically for **Gold (XAU/USD)** and **BTC/USD** trading.
 
 > File: [`ICT_SMC_SNR_Indicator.pine`](./ICT_SMC_SNR_Indicator.pine)
+
+## What's New in v3.0
+- **MSS (Market Structure Shift)** — sharper than CHoCH, requires displacement candle
+- **Breaker Blocks** — failed OBs that flip role into high-probability retest zones
+- **Mitigation Block entries** — institutional rebalancing on fresh OB retests
+- **AMD Entry Model** — Wyckoff-style Accumulation → Manipulation → Distribution
+- **HTF Sweep + LTF MSS Sniper** — H4 sweep + M5 MSS + FVG retrace (★★ premium)
+- **Trendline Liquidity** — false breakouts of diagonal pivot trendlines
+- **CRT (Candle Range Theory)** — 2-candle / 3-candle sweep reversal models
+- **Displacement detection** — strong impulsive candles confirming institutional intent
+- Confluence scoring upgraded from 9 → **15 points**
+- Info panel expanded to **22 rows** showing every detection live
 
 ---
 
@@ -12,14 +24,20 @@ A powerful TradingView Pine Script (v5) indicator that combines **Inner Circle T
 - **Order Blocks (OB)** — Auto-detected bullish/bearish institutional zones
 - **Fair Value Gaps (FVG / Imbalances)** — Auto-drawn, auto-removed when filled
 - **Inversion FVG (IFVG) / CISD** — Failed FVGs that flip role (support↔resistance)
+- **Breaker Blocks** — Failed OBs that flip role (high-prob retest zones)
+- **Mitigation Blocks** — Fresh OB retests for institutional rebalancing entries
 - **Liquidity Sweeps (BSL / SSL)** — Detects buy-side / sell-side stop hunts
+- **HTF Sweep Detection** — Multi-timeframe liquidity grabs (H4 / Daily)
+- **Trendline Liquidity** — False breakouts of diagonal pivot trendlines
+- **Displacement Detection** — Strong impulsive candles confirming intent
 - **Killzones** — London, New York, Asia session highlighting (UTC times)
 
 ### SMC (Smart Money Concepts)
-- **BOS (Break of Structure)** — Continuation signals
-- **CHoCH (Change of Character)** — Trend reversal signals
-- **Equal Highs / Equal Lows (EQH/EQL)** — Liquidity pools
+- **BOS / CHoCH / MSS** — Full structure detection with displacement confirmation
+- **AMD Entry Model** — Accumulation → Manipulation → Distribution phases
 - **Premium / Discount / Equilibrium** — Institutional buy/sell zones (50% Fib model)
+- **Equal Highs / Equal Lows (EQH/EQL)** — Liquidity pool detection
+- **CRT (Candle Range Theory)** — 2-candle and 3-candle sweep models
 - Internal + Swing structure detection
 
 ### SNR (Support & Resistance)
@@ -28,24 +46,43 @@ A powerful TradingView Pine Script (v5) indicator that combines **Inner Circle T
 - Automatic merging of nearby levels (within 0.5×ATR)
 
 ### Signal Engine
-- **9-point confluence scoring system** (Structure, OB, FVG, Liquidity, Premium/Discount, Killzone, HTF Trend, IFVG ×2)
-- 3 modes: **Aggressive (≥2)**, **Confluence (≥3)**, **Conservative (≥4)**
-- **Dedicated LS+CISD+FVG override** — fires high-probability inversion entries even at lower confluence
+- **15-point confluence scoring system** (Structure, MSS, OB, Breaker, Mitigation, FVG, Liquidity, HTF Sweep, Trendline Liquidity, CRT, AMD, Displacement, Premium/Discount, Killzone, HTF Trend, IFVG)
+- 3 modes: **Aggressive (≥3)**, **Confluence (≥5)**, **Conservative (≥7)**
+- **4 dedicated Premium Model overrides** — LS+CISD+FVG, HTF Sweep Sniper, AMD, Breakout+OB — fire high-probability entries even at lower confluence
 - HTF EMA200 trend filter
 - Cooldown between signals to avoid noise
 - Minimum R:R filter
 
-### LS + CISD + FVG (Inversion Entry Model) — NEW in v2.0
-The premium high-probability entry model based on the 6-step rule:
+### Premium Entry Models — 4 high-probability complete setups
 
-1. **HTF bias** confirmed (used only for entry confirmation)
-2. **Liquidity Grab** — price sweeps a previous BSL or SSL (stop hunt)
-3. **Find Inversion** — a failed FVG flips role: support↔resistance (CISD)
+#### 1. LS + CISD + FVG (Inversion Entry Model)
+1. **HTF bias** confirmed
+2. **Liquidity Grab** — price sweeps a previous BSL or SSL
+3. **Find Inversion** — a failed FVG flips role (CISD)
 4. **Wait for Retracement** back into the inversion zone
-5. **Entry & SL** — entry at the IFVG, SL just beyond the invalidation point
-6. **Target** — most recent high (for buys) or low (for sells)
+5. **Entry & SL** — entry at the IFVG, SL just beyond invalidation
+6. **Target** — most recent high/low
 
-The indicator detects every step automatically and prints a dedicated "LS+CISD+FVG" signal when all conditions align.
+#### 2. ★★ HTF Sweep + LTF MSS Sniper (highest probability)
+1. **HTF sweep** (e.g., H4 high or low taken on the configured HTF)
+2. **LTF MSS / CHoCH** confirms reversal on current timeframe
+3. **FVG / OB / IFVG entry** as price retraces
+4. **HTF bias aligned**
+5. **Target the swept HTF extreme**
+
+#### 3. AMD Model (Accumulation → Manipulation → Distribution)
+1. **Accumulation** — tight range detected (low volatility)
+2. **Manipulation** — false breakout in one direction (sweep)
+3. **Distribution** — displacement candle in opposite direction
+4. **Entry** on the distribution leg with HTF alignment
+
+#### 4. Breakout + Order Block Formation
+1. Sweep liquidity at highs/lows
+2. Strong displacement breaks structure
+3. Fresh OB forms at the origin of the displacement
+4. Entry on mitigation (retest) of that OB
+
+All 4 models fire dedicated signals on the chart and can be alerted independently.
 
 ### Risk Management
 - **Stop Loss** modes:
@@ -80,14 +117,17 @@ The indicator detects every step automatically and prints a dedicated "LS+CISD+F
 ### Gold (XAU/USD)
 | Setting              | Recommended |
 |----------------------|-------------|
-| Timeframe            | M15 / H1 / H4 |
+| Timeframe            | M5 / M15 / H1 / H4 |
 | Asset Profile        | XAUUSD (Gold) |
 | Swing Pivot Length   | 10 |
 | ATR Length           | 14 |
 | ATR Multiplier (SL)  | 1.5 – 1.8 |
-| Signal Mode          | Confluence (3+) |
+| Signal Mode          | Confluence (≥5) |
 | Min R:R              | 1.5 |
-| Trend TF             | 60 (1H) when scalping M15 |
+| Trend TF             | 60 (1H) when trading M15 |
+| HTF Sweep TF         | 240 (4H) for M5/M15 sniper setups |
+| Require Displacement | ON (filters weak MSS) |
+| Premium Models       | All 4 enabled for maximum coverage |
 
 ### BTC/USD
 | Setting              | Recommended |
@@ -97,28 +137,41 @@ The indicator detects every step automatically and prints a dedicated "LS+CISD+F
 | Swing Pivot Length   | 10–15 |
 | ATR Length           | 14 |
 | ATR Multiplier (SL)  | 2.0 – 2.5 (BTC is more volatile) |
-| Signal Mode          | Confluence (3+) |
+| Signal Mode          | Confluence (≥5) |
 | Min R:R              | 1.8 |
 | Trend TF             | 240 (4H) when trading H1 |
+| HTF Sweep TF         | D (Daily) for H1/H4 sniper setups |
+| Require Displacement | ON |
+| Premium Models       | All 4 enabled |
 
 ---
 
 ## How Signals Are Generated
 
-A **BUY signal** fires when at least N of the following 9 confluences align (N depends on mode):
+A **BUY signal** fires when the bullish confluence score reaches the selected threshold (Aggressive ≥3, Confluence ≥5, Conservative ≥7). The **15-point** scoring system:
 
-1. **Bullish market structure** (BOS up or CHoCH up)
-2. **Price tapped a Bullish Order Block**
-3. **Price filled a Bullish FVG**
-4. **Sell-side liquidity (SSL) swept** (price wicked below a swing low and closed back inside) — recent or current
-5. **Price is in the Discount zone** (below 50% of the recent range)
-6. **Active killzone** (London / NY / Asia)
-7. **HTF trend is bullish** (price above HTF EMA200)
-8. **Bullish IFVG / CISD tap** (counts as 2) — price retracing into a flipped FVG zone
+| # | Confluence | Pts |
+|---|------------|-----|
+| 1 | Bullish market structure (BOS up / CHoCH up) | 1 |
+| 2 | **MSS up** (structure shift with displacement) | 2 |
+| 3 | Price tapped a Bullish **Order Block** | 1 |
+| 4 | Price tapped a Bullish **Breaker Block** (flipped OB) | 2 |
+| 5 | **Mitigation Block** retest (fresh OB) | 1 |
+| 6 | Price filled a Bullish **FVG** | 1 |
+| 7 | **SSL liquidity sweep** (stop hunt below recent low) | 1 |
+| 8 | **HTF Sweep** (H4/D liquidity grab on higher timeframe) | 2 |
+| 9 | **Trendline Liquidity** sweep (diagonal false breakout) | 1 |
+| 10 | **CRT bullish** (2-candle/3-candle sweep reversal) | 1 |
+| 11 | **AMD Distribution leg** up (accumulation → manipulation → expansion) | 2 |
+| 12 | **Displacement candle** up | 1 |
+| 13 | Price is in the **Discount zone** (below 50%) | 1 |
+| 14 | Active **killzone** (London / NY / Asia) | 1 |
+| 15 | **HTF trend** is bullish (price above HTF EMA200) | 1 |
+| 16 | **Bullish IFVG / CISD tap** | 2 |
 
 A **SELL signal** is the mirror opposite.
 
-**LS+CISD+FVG override:** If the full Inversion Entry model is detected (recent liquidity sweep + IFVG retrace + HTF alignment), a dedicated signal fires regardless of total score.
+**Premium Model overrides:** If any of the 4 premium models fires a complete pattern (LS+CISD+FVG, HTF Sweep + LTF MSS Sniper, AMD, or Breakout + OB Formation), a dedicated signal is printed regardless of total score — these are the **highest probability** entries.
 
 The signal is **only printed** when:
 - Score ≥ required threshold
@@ -146,33 +199,50 @@ The signal is **only printed** when:
 
 ## Reading the Info Panel
 
-The top-right table updates every bar:
+The top-right **22-row info panel** updates every bar:
 
-| Row             | Meaning |
-|-----------------|---------|
-| Trend (HTF)     | Higher-timeframe EMA200 bias |
-| Structure       | Current market structure (BOS-based) |
-| Zone            | Premium / Discount / Equilibrium |
-| Killzone        | Active session (if any) |
-| In Bull/Bear OB | ✅ if price is sitting inside an order block |
-| In Bull/Bear FVG| ✅ if price is sitting inside a fair value gap |
-| ATR             | Current Average True Range |
-| Buy / Sell Score| Live confluence score (0–7) |
-| Signal          | 🟢 BUY NOW / 🔴 SELL NOW / ⏳ Wait |
-| Mode            | Active confluence mode + threshold |
+| Section | Rows |
+|---------|------|
+| **Bias** | Trend (HTF), Structure, MSS, Zone, Killzone |
+| **Zones** | In Bull/Bear OB, In Bull/Bear FVG, In Bull/Bear Breaker, IFVG Tap |
+| **Liquidity** | BSL/SSL Sweep, HTF Sweep, Trendline Liquidity, CRT |
+| **AMD** | Phase (Accumulation / Manipulation / Distribution) |
+| **Displacement** | Up / Down detection |
+| **Engine** | ATR, Buy Score, Sell Score (0–15), Signal status, Active Mode |
+
+A signal cell shows 🟢 **BUY NOW**, 🔴 **SELL NOW**, ★ **PREMIUM MODEL FIRED**, or ⏳ **Wait**.
 
 ---
 
 ## Setting Up Alerts (TradingView)
 
 1. Right-click the chart → **Add Alert**.
-2. Condition: `ICT+SMC+SNR PRO` → choose:
-   - `ICT BUY Signal` / `ICT SELL Signal`
-   - `LS+CISD+FVG BUY` / `LS+CISD+FVG SELL` (premium model)
-   - `Bull IFVG Tap` / `Bear IFVG Tap`
-   - `BOS Up / Down`
-   - `CHoCH Up / Down`
-   - `BSL Sweep` / `SSL Sweep`
+2. Condition: `ICT+SMC+SNR PRO` → choose one of the **26 alert conditions**:
+
+**Core signals**
+- `ICT BUY Signal` / `ICT SELL Signal`
+
+**Premium models (highest probability)**
+- `LS+CISD+FVG BUY` / `LS+CISD+FVG SELL`
+- `HTF Sweep Sniper BUY` / `HTF Sweep Sniper SELL`
+- `AMD BUY` / `AMD SELL`
+- `Breakout+OB BUY` / `Breakout+OB SELL`
+
+**Structure**
+- `BOS Up` / `BOS Down`
+- `CHoCH Up` / `CHoCH Down`
+- `MSS Up` / `MSS Down`
+
+**Liquidity**
+- `BSL Sweep` / `SSL Sweep`
+- `HTF BSL Sweep` / `HTF SSL Sweep`
+- `Trendline Liquidity Sweep`
+- `CRT Bullish` / `CRT Bearish`
+
+**Zones**
+- `Bull IFVG Tap` / `Bear IFVG Tap`
+- `Bull Breaker Tap` / `Bear Breaker Tap`
+
 3. Set **frequency** to **Once per bar close** (recommended for clean signals).
 4. Configure webhook / notification as desired.
 

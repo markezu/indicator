@@ -2,18 +2,22 @@
 // =============================================================================
 //  ICT + SMC + SNR PRO — Buy/Sell Signals with SL/TP for XAU/USD & BTC/USD
 //  Author: GenSpark AI Developer
-//  Version: 2.0
+//  Version: 3.0
 //
 //  This indicator combines:
 //   - ICT  (Inner Circle Trader): Order Blocks, Fair Value Gaps (FVG/Imbalance),
-//                                 Breaker Blocks, Liquidity Sweeps, Killzones
-//   - SMC  (Smart Money Concepts): BOS / CHoCH (Market Structure), Premium/Discount
-//                                 zones, Equal Highs/Lows, Internal/Swing structure
+//                                 Breaker Blocks, Liquidity Sweeps, Killzones,
+//                                 Displacement, Mitigation Blocks
+//   - SMC  (Smart Money Concepts): BOS / CHoCH / MSS (Market Structure Shift),
+//                                  Premium/Discount, Equal H/L, AMD model
 //   - SNR  (Support & Resistance): Pivot-based dynamic S/R, Multi-timeframe levels
 //   - LS+CISD+IFVG: Liquidity Sweep + Change in State of Delivery + Inversion FVG
-//                   (high-probability "Inversion Entry Model")
+//   - HTF Sweep + LTF Shift: Multi-timeframe sniper entry model (H4 sweep → M5 MSS)
+//   - Breaker Block: Failed OB that flips role (high-prob retest entry)
+//   - Trendline Liquidity: False breakout of diagonal pivot trendlines
+//   - CRT: Candle Range Theory (2-candle / 3-candle sweep models)
 //
-//  Engineered for Gold (XAU/USD) and BTC/USD on M15, H1, H4 timeframes.
+//  Engineered for Gold (XAU/USD) and BTC/USD on M5, M15, H1, H4 timeframes.
 //  Provides:
 //    - BUY/SELL signal arrows
 //    - Stop Loss (SL) line
@@ -72,6 +76,35 @@ grpLiq   = "═══════ Liquidity (ICT) ═══════"
 showLiq  = input.bool(true, "Show Liquidity Sweeps (Stop Hunts)", group=grpLiq)
 showEQ   = input.bool(true, "Show Equal Highs/Lows (EQH/EQL)", group=grpLiq)
 eqThresh = input.float(0.10, "EQH/EQL Tolerance (% of ATR)", minval=0.01, maxval=1.0, step=0.01, group=grpLiq)
+showTLiq = input.bool(true, "Show Trendline Liquidity (Diagonal Sweeps)", group=grpLiq,
+     tooltip="Detects false breakouts of diagonal trendlines drawn between consecutive pivots.")
+
+grpMSS   = "═══════ Market Structure Shift (MSS) ═══════"
+showMSS  = input.bool(true, "Show MSS (sharper than CHoCH)", group=grpMSS,
+     tooltip="MSS = CHoCH + strong displacement candle. High-conviction reversal signal.")
+mssDispMult = input.float(1.5, "MSS Displacement Multiplier (× body avg)", minval=1.0, maxval=5.0, step=0.1, group=grpMSS)
+
+grpBB    = "═══════ Breaker Block & Mitigation Block ═══════"
+showBB   = input.bool(true, "Show Breaker Blocks (failed OB flip)", group=grpBB,
+     tooltip="When an OB is violated, it inverts to a Breaker Block — high-prob retest zone in the new direction.")
+showMB   = input.bool(true, "Show Mitigation Block entries (OB retest)", group=grpBB,
+     tooltip="Highlights when price returns to a fresh OB after structure shift — institutional rebalancing entry.")
+bbMax    = input.int(4, "Max Breaker Blocks to Display", minval=1, maxval=15, group=grpBB)
+
+grpAMD   = "═══════ AMD Entry Model ═══════"
+showAMD  = input.bool(true, "Detect AMD (Accum → Manip → Dist) phases", group=grpAMD,
+     tooltip="Wyckoff-ICT fusion: Accumulation range → Manipulation (liq sweep) → Distribution (displacement).")
+amdRange = input.int(15, "Accumulation Range Length (bars)", minval=5, maxval=60, group=grpAMD)
+
+grpMTF   = "═══════ HTF Sweep + LTF Shift (Sniper Model) ═══════"
+showMTF  = input.bool(true, "Enable HTF→LTF sniper signals", group=grpMTF,
+     tooltip="H4 sweep + M5 MSS + FVG entry model. Uses current TF as 'LTF' and configured HTF for sweep.")
+mtfHTF   = input.timeframe("240", "HTF for Liquidity Sweep", group=grpMTF,
+     tooltip="240 = H4 (recommended). Use 60 if trading M1/M5, use Daily if trading H1.")
+
+grpCRT   = "═══════ Candle Range Theory (CRT) ═══════"
+showCRT  = input.bool(true, "Detect CRT 2-candle / 3-candle sweep models", group=grpCRT,
+     tooltip="CRT model: a candle's range gets swept by next candle's wick then closes back inside → reversal trigger.")
 
 grpSNR   = "═══════ Support & Resistance ═══════"
 showSNR  = input.bool(true, "Show Pivot S/R Levels", group=grpSNR)
@@ -142,7 +175,10 @@ if not na(plSwing)
     lastSwingL := plSwing
     lastSwingLBar := bar_index - swingLen
 
-// ========================= MARKET STRUCTURE (BOS/CHOCH) ======================
+// ========================= MARKET STRUCTURE (BOS/CHOCH/MSS) ==================
+// BOS  = continuation (in-trend break of a swing)
+// CHoCH= reversal (first break against trend)
+// MSS  = sharper CHoCH backed by a strong DISPLACEMENT candle (high conviction)
 var int trend = 0   // 1 bullish, -1 bearish, 0 none
 var float lastHH = na
 var float lastLL = na
@@ -150,15 +186,26 @@ var bool bosUp   = false
 var bool bosDn   = false
 var bool chochUp = false
 var bool chochDn = false
+var bool mssUp   = false
+var bool mssDn   = false
 
 bosUp   := false
 bosDn   := false
 chochUp := false
 chochDn := false
+mssUp   := false
+mssDn   := false
+
+// Displacement detection (used by MSS and AMD)
+bodyAvgEarly = ta.sma(math.abs(close - open), 20)
+displacementUp = close > open and (close - open) >= bodyAvgEarly * mssDispMult
+displacementDn = open > close and (open - close) >= bodyAvgEarly * mssDispMult
 
 if not na(lastSwingH) and close > lastSwingH and close[1] <= lastSwingH
     if trend == -1
         chochUp := true
+        if displacementUp
+            mssUp := true
     else
         bosUp := true
     trend := 1
@@ -167,12 +214,14 @@ if not na(lastSwingH) and close > lastSwingH and close[1] <= lastSwingH
 if not na(lastSwingL) and close < lastSwingL and close[1] >= lastSwingL
     if trend == 1
         chochDn := true
+        if displacementDn
+            mssDn := true
     else
         bosDn := true
     trend := -1
     lastLL := lastSwingL
 
-// Plot BOS / CHoCH lines
+// Plot BOS / CHoCH / MSS lines
 if showBOS and bosUp
     line.new(bar_index - swingLen, lastSwingH, bar_index, lastSwingH,
              color=color.new(color.green, 0), width=1, style=line.style_dashed)
@@ -183,27 +232,48 @@ if showBOS and bosDn
              color=color.new(color.red, 0), width=1, style=line.style_dashed)
     label.new(bar_index, lastSwingL, "BOS↓", color=color.new(color.red, 80),
              style=label.style_label_up, textcolor=color.white, size=size.tiny)
-if showCHOCH and chochUp
+if showCHOCH and chochUp and not mssUp
     line.new(bar_index - swingLen, lastSwingH, bar_index, lastSwingH,
              color=color.new(color.lime, 0), width=2)
     label.new(bar_index, lastSwingH, "CHoCH↑", color=color.new(color.lime, 60),
              style=label.style_label_down, textcolor=color.black, size=size.small)
-if showCHOCH and chochDn
+if showCHOCH and chochDn and not mssDn
     line.new(bar_index - swingLen, lastSwingL, bar_index, lastSwingL,
              color=color.new(color.fuchsia, 0), width=2)
     label.new(bar_index, lastSwingL, "CHoCH↓", color=color.new(color.fuchsia, 60),
+             style=label.style_label_up, textcolor=color.white, size=size.small)
+if showMSS and mssUp
+    line.new(bar_index - swingLen, lastSwingH, bar_index, lastSwingH,
+             color=color.new(#00e676, 0), width=3)
+    label.new(bar_index, lastSwingH, "★MSS↑", color=color.new(#00e676, 20),
+             style=label.style_label_down, textcolor=color.black, size=size.small)
+if showMSS and mssDn
+    line.new(bar_index - swingLen, lastSwingL, bar_index, lastSwingL,
+             color=color.new(#ff1744, 0), width=3)
+    label.new(bar_index, lastSwingL, "★MSS↓", color=color.new(#ff1744, 20),
              style=label.style_label_up, textcolor=color.white, size=size.small)
 
 // =============================== ORDER BLOCKS ================================
 // Bullish OB = last down candle before a strong bullish impulse breaking structure
 // Bearish OB = last up candle before a strong bearish impulse breaking structure
+// When an OB is violated, it flips into a BREAKER BLOCK (high-prob retest zone)
 
 var array<box> bullOBs = array.new<box>()
 var array<box> bearOBs = array.new<box>()
 var array<float> bullOBLow  = array.new<float>()
 var array<float> bullOBHigh = array.new<float>()
+var array<int>   bullOBBar  = array.new<int>()
 var array<float> bearOBLow  = array.new<float>()
 var array<float> bearOBHigh = array.new<float>()
+var array<int>   bearOBBar  = array.new<int>()
+
+// Breaker Block storage (a failed OB that flips role)
+var array<box>   bullBBs    = array.new<box>()
+var array<box>   bearBBs    = array.new<box>()
+var array<float> bullBBTop  = array.new<float>()
+var array<float> bullBBBot  = array.new<float>()
+var array<float> bearBBTop  = array.new<float>()
+var array<float> bearBBBot  = array.new<float>()
 
 bodyAvg = ta.sma(math.abs(close - open), 20)
 strongBull = close > open and (close - open) > bodyAvg * 1.2
@@ -221,10 +291,12 @@ if showOB and strongBull and close > high[1]
             array.push(bullOBs, b)
             array.push(bullOBLow,  obBot)
             array.push(bullOBHigh, obTop)
+            array.push(bullOBBar,  bar_index)
             if array.size(bullOBs) > obMax
                 box.delete(array.shift(bullOBs))
                 array.shift(bullOBLow)
                 array.shift(bullOBHigh)
+                array.shift(bullOBBar)
             break
 
 if showOB and strongBear and close < low[1]
@@ -237,11 +309,64 @@ if showOB and strongBear and close < low[1]
             array.push(bearOBs, b)
             array.push(bearOBLow,  obBot)
             array.push(bearOBHigh, obTop)
+            array.push(bearOBBar,  bar_index)
             if array.size(bearOBs) > obMax
                 box.delete(array.shift(bearOBs))
                 array.shift(bearOBLow)
                 array.shift(bearOBHigh)
+                array.shift(bearOBBar)
             break
+
+// Detect OB violation → flip to Breaker Block
+if showBB and array.size(bullOBs) > 0
+    for i = array.size(bullOBs) - 1 to 0
+        if close < array.get(bullOBLow, i)
+            tT = array.get(bullOBHigh, i)
+            tB = array.get(bullOBLow, i)
+            box.delete(array.get(bullOBs, i))
+            array.remove(bullOBs, i)
+            array.remove(bullOBLow, i)
+            array.remove(bullOBHigh, i)
+            array.remove(bullOBBar, i)
+            // The broken bull OB now acts as BEARISH BREAKER (resistance)
+            bb = box.new(bar_index, tT, bar_index + 20, tB,
+                         border_color=color.new(#7c4dff, 30), border_width=2,
+                         bgcolor=color.new(#7c4dff, 80))
+            array.push(bearBBs, bb)
+            array.push(bearBBTop, tT)
+            array.push(bearBBBot, tB)
+            label.new(bar_index, tT, "Breaker↓",
+                     color=color.new(#7c4dff, 30), textcolor=color.white,
+                     style=label.style_label_down, size=size.tiny)
+            if array.size(bearBBs) > bbMax
+                box.delete(array.shift(bearBBs))
+                array.shift(bearBBTop)
+                array.shift(bearBBBot)
+
+if showBB and array.size(bearOBs) > 0
+    for i = array.size(bearOBs) - 1 to 0
+        if close > array.get(bearOBHigh, i)
+            tT = array.get(bearOBHigh, i)
+            tB = array.get(bearOBLow, i)
+            box.delete(array.get(bearOBs, i))
+            array.remove(bearOBs, i)
+            array.remove(bearOBLow, i)
+            array.remove(bearOBHigh, i)
+            array.remove(bearOBBar, i)
+            // The broken bear OB now acts as BULLISH BREAKER (support)
+            bb = box.new(bar_index, tT, bar_index + 20, tB,
+                         border_color=color.new(#7c4dff, 30), border_width=2,
+                         bgcolor=color.new(#7c4dff, 80))
+            array.push(bullBBs, bb)
+            array.push(bullBBTop, tT)
+            array.push(bullBBBot, tB)
+            label.new(bar_index, tB, "Breaker↑",
+                     color=color.new(#7c4dff, 30), textcolor=color.white,
+                     style=label.style_label_up, size=size.tiny)
+            if array.size(bullBBs) > bbMax
+                box.delete(array.shift(bullBBs))
+                array.shift(bullBBTop)
+                array.shift(bullBBBot)
 
 // Test if price is currently in a bullish/bearish OB
 inBullOB = false
@@ -256,6 +381,52 @@ if array.size(bearOBLow) > 0
         if low <= array.get(bearOBHigh, i) and high >= array.get(bearOBLow, i)
             inBearOB := true
             break
+
+// Mitigation Block: retest of a FRESH OB (within 30 bars of its creation)
+isMitigationBull = false
+isMitigationBear = false
+if showMB and array.size(bullOBBar) > 0
+    for i = 0 to array.size(bullOBBar) - 1
+        age = bar_index - array.get(bullOBBar, i)
+        if age > 1 and age < 30 and low <= array.get(bullOBHigh, i) and high >= array.get(bullOBLow, i)
+            isMitigationBull := true
+            break
+if showMB and array.size(bearOBBar) > 0
+    for i = 0 to array.size(bearOBBar) - 1
+        age = bar_index - array.get(bearOBBar, i)
+        if age > 1 and age < 30 and low <= array.get(bearOBHigh, i) and high >= array.get(bearOBLow, i)
+            isMitigationBear := true
+            break
+
+// Test if price is currently in a Breaker Block
+inBullBB = false
+inBearBB = false
+if array.size(bullBBTop) > 0
+    for i = 0 to array.size(bullBBTop) - 1
+        if low <= array.get(bullBBTop, i) and high >= array.get(bullBBBot, i)
+            inBullBB := true
+            break
+if array.size(bearBBTop) > 0
+    for i = 0 to array.size(bearBBTop) - 1
+        if low <= array.get(bearBBTop, i) and high >= array.get(bearBBBot, i)
+            inBearBB := true
+            break
+
+// Invalidate breaker blocks if violated
+if array.size(bullBBs) > 0
+    for i = array.size(bullBBs) - 1 to 0
+        if close < array.get(bullBBBot, i)
+            box.delete(array.get(bullBBs, i))
+            array.remove(bullBBs, i)
+            array.remove(bullBBTop, i)
+            array.remove(bullBBBot, i)
+if array.size(bearBBs) > 0
+    for i = array.size(bearBBs) - 1 to 0
+        if close > array.get(bearBBTop, i)
+            box.delete(array.get(bearBBs, i))
+            array.remove(bearBBs, i)
+            array.remove(bearBBTop, i)
+            array.remove(bearBBBot, i)
 
 // =============================== FAIR VALUE GAPS =============================
 // Bullish FVG: low[0] > high[2]   |  Bearish FVG: high[0] < low[2]
@@ -447,6 +618,121 @@ if showLiq and sweepLow
     label.new(bar_index, low, "SSL Sweep", color=color.new(color.aqua, 40),
              style=label.style_label_up, textcolor=color.black, size=size.tiny)
 
+// ===================== HTF SWEEP (Multi-Timeframe Sniper) ====================
+// H4 sweep + LTF MSS + FVG/IFVG entry → high-probability sniper model
+htfHi  = request.security(syminfo.tickerid, mtfHTF, ta.highest(high, 20)[1], lookahead=barmerge.lookahead_off)
+htfLo  = request.security(syminfo.tickerid, mtfHTF, ta.lowest(low,  20)[1], lookahead=barmerge.lookahead_off)
+htfSweepHigh = high > htfHi and close < htfHi
+htfSweepLow  = low  < htfLo and close > htfLo
+
+var int lastHTFSweepHighBar = -10000
+var int lastHTFSweepLowBar  = -10000
+if htfSweepHigh
+    lastHTFSweepHighBar := bar_index
+if htfSweepLow
+    lastHTFSweepLowBar := bar_index
+
+recentHTFSweepHigh = (bar_index - lastHTFSweepHighBar) <= 30
+recentHTFSweepLow  = (bar_index - lastHTFSweepLowBar)  <= 30
+
+if showMTF and htfSweepHigh
+    label.new(bar_index, high, "HTF↑ Sweep", color=color.new(#ff5722, 20),
+             style=label.style_label_down, textcolor=color.white, size=size.small)
+if showMTF and htfSweepLow
+    label.new(bar_index, low, "HTF↓ Sweep", color=color.new(#2196f3, 20),
+             style=label.style_label_up, textcolor=color.white, size=size.small)
+
+// ============================= CRT DETECTION =================================
+// 2-Candle CRT BULL: candle[1] is large bear, current candle wicks below low[1] but closes above low[1]
+// 2-Candle CRT BEAR: candle[1] is large bull, current candle wicks above high[1] but closes below high[1]
+crt2Bull = showCRT and open[1] > close[1] and (open[1] - close[1]) > bodyAvg and
+           low < low[1] and close > low[1] and close > open
+crt2Bear = showCRT and close[1] > open[1] and (close[1] - open[1]) > bodyAvg and
+           high > high[1] and close < high[1] and close < open
+
+// 3-Candle CRT: middle candle's range is swept by candle[0], closes back inside
+crt3Bull = showCRT and low < low[1] and low < low[2] and close > low[1] and close > open
+crt3Bear = showCRT and high > high[1] and high > high[2] and close < high[1] and close < open
+
+crtBull = crt2Bull or crt3Bull
+crtBear = crt2Bear or crt3Bear
+
+if crtBull
+    label.new(bar_index, low, "CRT↑", color=color.new(#00bcd4, 30),
+             style=label.style_label_up, textcolor=color.white, size=size.tiny)
+if crtBear
+    label.new(bar_index, high, "CRT↓", color=color.new(#ff9800, 30),
+             style=label.style_label_down, textcolor=color.white, size=size.tiny)
+
+// ====================== TRENDLINE LIQUIDITY (Diagonal) =======================
+// Connect two recent pivot highs (descending = potential trendline above price)
+// or two recent pivot lows (ascending = potential trendline below price).
+// A false break (wick beyond, close back inside) = trendline liquidity sweep.
+var float tlH1 = na, var int tlH1Bar = 0
+var float tlH2 = na, var int tlH2Bar = 0
+var float tlL1 = na, var int tlL1Bar = 0
+var float tlL2 = na, var int tlL2Bar = 0
+
+if not na(phSwing)
+    tlH1 := tlH2
+    tlH1Bar := tlH2Bar
+    tlH2 := phSwing
+    tlH2Bar := bar_index - swingLen
+if not na(plSwing)
+    tlL1 := tlL2
+    tlL1Bar := tlL2Bar
+    tlL2 := plSwing
+    tlL2Bar := bar_index - swingLen
+
+// Compute current trendline value extrapolated to this bar
+f_tlValue(y1, x1, y2, x2) =>
+    na(y1) or na(y2) or x2 == x1 ? na : y1 + (y2 - y1) * (bar_index - x1) / (x2 - x1)
+
+tlHighVal = f_tlValue(tlH1, tlH1Bar, tlH2, tlH2Bar)
+tlLowVal  = f_tlValue(tlL1, tlL1Bar, tlL2, tlL2Bar)
+
+tlSweepHigh = showTLiq and not na(tlHighVal) and high > tlHighVal and close < tlHighVal
+tlSweepLow  = showTLiq and not na(tlLowVal)  and low  < tlLowVal  and close > tlLowVal
+
+if tlSweepHigh
+    label.new(bar_index, high, "TL-Liq↑", color=color.new(#ffc107, 20),
+             style=label.style_label_down, textcolor=color.black, size=size.tiny)
+if tlSweepLow
+    label.new(bar_index, low, "TL-Liq↓", color=color.new(#ffc107, 20),
+             style=label.style_label_up, textcolor=color.black, size=size.tiny)
+
+// ============================= AMD ENTRY MODEL ===============================
+// Accumulation: tight range (low ATR, narrow high-low spread over N bars)
+// Manipulation: liquidity sweep out of the range (high above range top or low below range bottom)
+// Distribution: displacement candle in opposite direction + FVG formed
+accRangeHi = ta.highest(high, amdRange)
+accRangeLo = ta.lowest(low,  amdRange)
+accRangeMid = (accRangeHi + accRangeLo) / 2
+accRangeWidth = accRangeHi - accRangeLo
+isAccumulation = showAMD and accRangeWidth < atr * 3.5  // tight range
+
+// Manipulation: this bar wicks outside the prior accumulation range
+var bool amdManipUp   = false
+var bool amdManipDn   = false
+amdManipUp := false
+amdManipDn := false
+
+if showAMD and isAccumulation[1] and high > accRangeHi[1] and close < accRangeHi[1]
+    amdManipUp := true   // upward fake → bearish setup coming
+if showAMD and isAccumulation[1] and low  < accRangeLo[1] and close > accRangeLo[1]
+    amdManipDn := true   // downward fake → bullish setup coming
+
+// Distribution: displacement candle in the opposite direction
+amdShort = amdManipUp[1] and displacementDn and (low > high[2] or true)   // bear FVG often forms
+amdLong  = amdManipDn[1] and displacementUp and (high < low[2] or true)
+
+if amdLong
+    label.new(bar_index, low, "AMD↑", color=color.new(#4caf50, 10),
+             style=label.style_label_up, textcolor=color.white, size=size.small)
+if amdShort
+    label.new(bar_index, high, "AMD↓", color=color.new(#f44336, 10),
+             style=label.style_label_down, textcolor=color.white, size=size.small)
+
 // ============================ EQUAL HIGHS / LOWS =============================
 var float prevPH = na
 var float prevPL = na
@@ -630,11 +916,64 @@ if inBearIFVG
     sellScore += 2
     sellReason := sellReason + "• Inversion FVG TAP (CISD) → bearish flip zone\n"
 
-// ========================== LS + CISD + FVG MODEL ============================
-// Premium "Inversion Entry Model":
-//   1) Liquidity sweep (BSL or SSL) within last `ifvgLkbk` bars
-//   2) Price now retracing INTO an Inversion FVG zone
-//   3) HTF bias aligned (if filter enabled)
+// 9) MSS (Market Structure Shift) — high conviction
+if mssUp
+    buyScore += 2
+    buyReason := buyReason + "• ★ MSS↑ (displacement-confirmed reversal)\n"
+if mssDn
+    sellScore += 2
+    sellReason := sellReason + "• ★ MSS↓ (displacement-confirmed reversal)\n"
+
+// 10) Breaker Block retest
+if inBullBB
+    buyScore += 1
+    buyReason := buyReason + "• Bullish Breaker Block retest\n"
+if inBearBB
+    sellScore += 1
+    sellReason := sellReason + "• Bearish Breaker Block retest\n"
+
+// 11) Mitigation Block entry (fresh OB retest)
+if isMitigationBull
+    buyScore += 1
+    buyReason := buyReason + "• Bullish OB Mitigation (institutional rebalance)\n"
+if isMitigationBear
+    sellScore += 1
+    sellReason := sellReason + "• Bearish OB Mitigation (institutional rebalance)\n"
+
+// 12) HTF Sweep (multi-timeframe sniper context)
+if recentHTFSweepLow
+    buyScore += 1
+    buyReason := buyReason + "• HTF " + mtfHTF + " Low SWEPT (liquidity grabbed)\n"
+if recentHTFSweepHigh
+    sellScore += 1
+    sellReason := sellReason + "• HTF " + mtfHTF + " High SWEPT (liquidity grabbed)\n"
+
+// 13) Trendline Liquidity (false break of diagonal)
+if tlSweepLow
+    buyScore += 1
+    buyReason := buyReason + "• Trendline Liquidity grab (false break of asc. line)\n"
+if tlSweepHigh
+    sellScore += 1
+    sellReason := sellReason + "• Trendline Liquidity grab (false break of desc. line)\n"
+
+// 14) CRT (Candle Range Theory)
+if crtBull
+    buyScore += 1
+    buyReason := buyReason + "• CRT Bullish (range sweep + close back inside)\n"
+if crtBear
+    sellScore += 1
+    sellReason := sellReason + "• CRT Bearish (range sweep + close back inside)\n"
+
+// 15) Displacement confirmation
+if displacementUp
+    buyScore += 1
+    buyReason := buyReason + "• Bullish Displacement candle (intent confirmation)\n"
+if displacementDn
+    sellScore += 1
+    sellReason := sellReason + "• Bearish Displacement candle (intent confirmation)\n"
+
+// ========================== PREMIUM MODELS (Overrides) =======================
+// LS+CISD+FVG (Inversion Entry Model)
 ifvgBuyModel  = inBullIFVG and (not ifvgRequireSweep or recentSSLSweep) and (not useTrendFlt or htfBull)
 ifvgSellModel = inBearIFVG and (not ifvgRequireSweep or recentBSLSweep) and (not useTrendFlt or htfBear)
 
@@ -643,8 +982,26 @@ if ifvgBuyModel
 if ifvgSellModel
     sellReason := sellReason + "★ LS+CISD+FVG MODEL: BSL swept → IFVG retrace → SELL\n"
 
-// Required score by mode
-reqScore = sigMode == "Aggressive" ? 2 : sigMode == "Conservative" ? 4 : 3
+// HTF Sweep + LTF MSS + FVG/OB (Sniper Model)
+sniperBuy  = showMTF and recentHTFSweepLow  and (mssUp or chochUp) and (inBullFVG or inBullOB or inBullIFVG) and (not useTrendFlt or htfBull)
+sniperSell = showMTF and recentHTFSweepHigh and (mssDn or chochDn) and (inBearFVG or inBearOB or inBearIFVG) and (not useTrendFlt or htfBear)
+
+if sniperBuy
+    buyReason := buyReason + "★★ HTF SWEEP+LTF MSS+FVG: SNIPER BUY model\n"
+if sniperSell
+    sellReason := sellReason + "★★ HTF SWEEP+LTF MSS+FVG: SNIPER SELL model\n"
+
+// AMD complete model
+amdBuyModel  = amdLong  and (not useTrendFlt or htfBull)
+amdSellModel = amdShort and (not useTrendFlt or htfBear)
+
+if amdBuyModel
+    buyReason := buyReason + "★ AMD: Accum→Manip(SSL)→Distribution↑\n"
+if amdSellModel
+    sellReason := sellReason + "★ AMD: Accum→Manip(BSL)→Distribution↓\n"
+
+// Required score by mode (now scoring out of 15)
+reqScore = sigMode == "Aggressive" ? 3 : sigMode == "Conservative" ? 6 : 4
 
 // Trend filter (hard block opposite signals)
 buyAllowed  = not useTrendFlt or htfBull
@@ -654,9 +1011,9 @@ sellAllowed = not useTrendFlt or htfBear
 rawBuy  = buyScore  >= reqScore and buyAllowed  and buyScore  > sellScore
 rawSell = sellScore >= reqScore and sellAllowed and sellScore > buyScore
 
-// IFVG model overrides — fire even with lower confluence because it's a complete setup
-rawBuy  := rawBuy  or ifvgBuyModel
-rawSell := rawSell or ifvgSellModel
+// Premium model overrides — fire even with lower confluence
+rawBuy  := rawBuy  or ifvgBuyModel  or sniperBuy  or amdBuyModel
+rawSell := rawSell or ifvgSellModel or sniperSell or amdSellModel
 
 // Avoid back-to-back signals
 var int lastSigBar = -1000
@@ -726,7 +1083,7 @@ f_drawSignal(isBuy, entry, sl, tp1, tp2, tp3, reason, score) =>
     // Entry reason label on the chart
     if showLbls
         rrTxt = "R:R = 1:" + str.tostring(tp2RR, "#.#")
-        head  = (isBuy ? "🟢 BUY SIGNAL  (Score " : "🔴 SELL SIGNAL  (Score ") + str.tostring(score) + "/7)\n"
+        head  = (isBuy ? "🟢 BUY SIGNAL  (Score " : "🔴 SELL SIGNAL  (Score ") + str.tostring(score) + "/15)\n"
         body  = head + "Entry: " + str.tostring(entry, format.mintick) +
                 "\nSL: "    + str.tostring(sl,  format.mintick) +
                 "\nTP1: "   + str.tostring(tp1, format.mintick) +
@@ -778,8 +1135,8 @@ var table info = na
 if barstate.islast and showInfo
     if not na(info)
         table.delete(info)
-    info := table.new(position.top_right, 2, 17, border_width=1)
-    table.cell(info, 0, 0, "ICT+SMC+SNR PRO", bgcolor=color.new(color.black, 10), text_color=color.white, text_size=size.normal)
+    info := table.new(position.top_right, 2, 22, border_width=1)
+    table.cell(info, 0, 0, "ICT+SMC+SNR PRO v3", bgcolor=color.new(color.black, 10), text_color=color.white, text_size=size.normal)
     table.cell(info, 1, 0, isGold ? "XAU/USD" : isBTC ? "BTC/USD" : sym, bgcolor=color.new(color.black, 10), text_color=color.yellow, text_size=size.normal)
 
     table.cell(info, 0, 1, "Trend (HTF)", bgcolor=color.new(color.gray, 80), text_color=color.white)
@@ -787,8 +1144,10 @@ if barstate.islast and showInfo
                bgcolor=color.new(color.gray, 80), text_color=htfBull ? color.lime : htfBear ? color.red : color.gray)
 
     table.cell(info, 0, 2, "Structure", bgcolor=color.new(color.gray, 85), text_color=color.white)
-    table.cell(info, 1, 2, trend == 1 ? "Bullish" : trend == -1 ? "Bearish" : "Range",
-               bgcolor=color.new(color.gray, 85), text_color=color.white)
+    structTxt = mssUp ? "★MSS↑" : mssDn ? "★MSS↓" : chochUp ? "CHoCH↑" : chochDn ? "CHoCH↓" :
+                trend == 1 ? "Bullish" : trend == -1 ? "Bearish" : "Range"
+    table.cell(info, 1, 2, structTxt, bgcolor=color.new(color.gray, 85),
+               text_color=mssUp or chochUp or trend == 1 ? color.lime : mssDn or chochDn or trend == -1 ? color.red : color.gray)
 
     table.cell(info, 0, 3, "Zone", bgcolor=color.new(color.gray, 80), text_color=color.white)
     zoneTxt = inPremium ? "Premium (sell)" : inDiscount ? "Discount (buy)" : "Equilibrium"
@@ -799,51 +1158,96 @@ if barstate.islast and showInfo
     kzTxt = inLondon ? "London" : inNY ? "New York" : inAsia ? "Asia" : "—"
     table.cell(info, 1, 4, kzTxt, bgcolor=color.new(color.gray, 85), text_color=color.aqua)
 
-    table.cell(info, 0, 5, "In Bull OB", bgcolor=color.new(color.gray, 80), text_color=color.white)
-    table.cell(info, 1, 5, inBullOB ? "✅" : "—", bgcolor=color.new(color.gray, 80), text_color=color.lime)
-    table.cell(info, 0, 6, "In Bear OB", bgcolor=color.new(color.gray, 85), text_color=color.white)
-    table.cell(info, 1, 6, inBearOB ? "✅" : "—", bgcolor=color.new(color.gray, 85), text_color=color.red)
+    table.cell(info, 0, 5, "OB", bgcolor=color.new(color.gray, 80), text_color=color.white)
+    obTxt = inBullOB ? "🟢 Bull OB" : inBearOB ? "🔴 Bear OB" : "—"
+    table.cell(info, 1, 5, obTxt, bgcolor=color.new(color.gray, 80), text_color=color.white)
 
-    table.cell(info, 0, 7, "In Bull FVG", bgcolor=color.new(color.gray, 80), text_color=color.white)
-    table.cell(info, 1, 7, inBullFVG ? "✅" : "—", bgcolor=color.new(color.gray, 80), text_color=color.lime)
-    table.cell(info, 0, 8, "In Bear FVG", bgcolor=color.new(color.gray, 85), text_color=color.white)
-    table.cell(info, 1, 8, inBearFVG ? "✅" : "—", bgcolor=color.new(color.gray, 85), text_color=color.red)
+    table.cell(info, 0, 6, "Mitigation", bgcolor=color.new(color.gray, 85), text_color=color.white)
+    mitTxt = isMitigationBull ? "🟢 Bull retest" : isMitigationBear ? "🔴 Bear retest" : "—"
+    table.cell(info, 1, 6, mitTxt, bgcolor=color.new(color.gray, 85), text_color=color.white)
 
-    // IFVG / CISD rows
-    table.cell(info, 0, 9, "Bull IFVG (CISD)", bgcolor=color.new(#ec407a, 75), text_color=color.white)
-    table.cell(info, 1, 9, inBullIFVG ? "✅ TAP" : "—", bgcolor=color.new(#ec407a, 75), text_color=color.white)
-    table.cell(info, 0, 10, "Bear IFVG (CISD)", bgcolor=color.new(#ec407a, 80), text_color=color.white)
-    table.cell(info, 1, 10, inBearIFVG ? "✅ TAP" : "—", bgcolor=color.new(#ec407a, 80), text_color=color.white)
+    table.cell(info, 0, 7, "Breaker", bgcolor=color.new(#7c4dff, 80), text_color=color.white)
+    bbTxt = inBullBB ? "🟢 Bull Breaker" : inBearBB ? "🔴 Bear Breaker" : "—"
+    table.cell(info, 1, 7, bbTxt, bgcolor=color.new(#7c4dff, 80), text_color=color.white)
 
-    table.cell(info, 0, 11, "Recent BSL Sweep", bgcolor=color.new(color.gray, 80), text_color=color.white)
-    table.cell(info, 1, 11, recentBSLSweep ? "✅ (" + str.tostring(bar_index - lastBSLSweepBar) + " bars)" : "—",
+    table.cell(info, 0, 8, "FVG", bgcolor=color.new(color.gray, 80), text_color=color.white)
+    fvgTxt = inBullFVG ? "🟢 Bull FVG" : inBearFVG ? "🔴 Bear FVG" : "—"
+    table.cell(info, 1, 8, fvgTxt, bgcolor=color.new(color.gray, 80), text_color=color.white)
+
+    table.cell(info, 0, 9, "IFVG / CISD", bgcolor=color.new(#ec407a, 75), text_color=color.white)
+    ifvgTxt = inBullIFVG ? "🟢 Bull IFVG TAP" : inBearIFVG ? "🔴 Bear IFVG TAP" : "—"
+    table.cell(info, 1, 9, ifvgTxt, bgcolor=color.new(#ec407a, 75), text_color=color.white)
+
+    table.cell(info, 0, 10, "BSL Sweep", bgcolor=color.new(color.gray, 80), text_color=color.white)
+    table.cell(info, 1, 10, recentBSLSweep ? "✅ " + str.tostring(bar_index - lastBSLSweepBar) + "b ago" : "—",
                bgcolor=color.new(color.gray, 80), text_color=color.orange)
-    table.cell(info, 0, 12, "Recent SSL Sweep", bgcolor=color.new(color.gray, 85), text_color=color.white)
-    table.cell(info, 1, 12, recentSSLSweep ? "✅ (" + str.tostring(bar_index - lastSSLSweepBar) + " bars)" : "—",
+    table.cell(info, 0, 11, "SSL Sweep", bgcolor=color.new(color.gray, 85), text_color=color.white)
+    table.cell(info, 1, 11, recentSSLSweep ? "✅ " + str.tostring(bar_index - lastSSLSweepBar) + "b ago" : "—",
                bgcolor=color.new(color.gray, 85), text_color=color.aqua)
 
-    table.cell(info, 0, 13, "ATR (" + str.tostring(atrLen) + ")", bgcolor=color.new(color.gray, 80), text_color=color.white)
-    table.cell(info, 1, 13, str.tostring(atr, format.mintick), bgcolor=color.new(color.gray, 80), text_color=color.white)
+    table.cell(info, 0, 12, "HTF Sweep " + mtfHTF, bgcolor=color.new(#ff5722, 75), text_color=color.white)
+    htfSwTxt = recentHTFSweepLow ? "✅ Low swept" : recentHTFSweepHigh ? "✅ High swept" : "—"
+    table.cell(info, 1, 12, htfSwTxt, bgcolor=color.new(#ff5722, 75), text_color=color.white)
 
-    table.cell(info, 0, 14, "Buy Score",  bgcolor=color.new(color.green, 70), text_color=color.white)
-    table.cell(info, 1, 14, str.tostring(buyScore)  + " / 9",  bgcolor=color.new(color.green, 70), text_color=color.white)
-    table.cell(info, 0, 15, "Sell Score", bgcolor=color.new(color.red, 70),   text_color=color.white)
-    table.cell(info, 1, 15, str.tostring(sellScore) + " / 9", bgcolor=color.new(color.red, 70),   text_color=color.white)
+    table.cell(info, 0, 13, "TL Liquidity", bgcolor=color.new(#ffc107, 80), text_color=color.white)
+    tlTxt = tlSweepLow ? "🟢 Asc TL broken" : tlSweepHigh ? "🔴 Desc TL broken" : "—"
+    table.cell(info, 1, 13, tlTxt, bgcolor=color.new(#ffc107, 80), text_color=color.black)
 
-    sigStatus = ifvgBuyModel ? "🟢 LS+CISD BUY" : ifvgSellModel ? "🔴 LS+CISD SELL" :
-                buySignal    ? "🟢 BUY NOW"      : sellSignal    ? "🔴 SELL NOW"     : "⏳ Wait"
-    sigCol = (buySignal or ifvgBuyModel) ? color.new(color.lime, 0) :
-             (sellSignal or ifvgSellModel) ? color.new(color.red, 0) : color.new(color.gray, 50)
-    table.cell(info, 0, 16, "Signal", bgcolor=sigCol, text_color=color.white, text_size=size.normal)
-    table.cell(info, 1, 16, sigStatus, bgcolor=sigCol, text_color=color.white, text_size=size.normal)
+    table.cell(info, 0, 14, "CRT", bgcolor=color.new(#00bcd4, 80), text_color=color.white)
+    crtTxt = crtBull ? "🟢 CRT Bull" : crtBear ? "🔴 CRT Bear" : "—"
+    table.cell(info, 1, 14, crtTxt, bgcolor=color.new(#00bcd4, 80), text_color=color.white)
+
+    table.cell(info, 0, 15, "AMD", bgcolor=color.new(#4caf50, 80), text_color=color.white)
+    amdTxt = amdBuyModel ? "🟢 AMD Long" : amdSellModel ? "🔴 AMD Short" :
+             amdManipUp ? "Manip↑ (wait)" : amdManipDn ? "Manip↓ (wait)" : isAccumulation ? "Accumulation" : "—"
+    table.cell(info, 1, 15, amdTxt, bgcolor=color.new(#4caf50, 80), text_color=color.white)
+
+    table.cell(info, 0, 16, "Displacement", bgcolor=color.new(color.gray, 80), text_color=color.white)
+    dispTxt = displacementUp ? "🟢 Bull ★" : displacementDn ? "🔴 Bear ★" : "—"
+    table.cell(info, 1, 16, dispTxt, bgcolor=color.new(color.gray, 80), text_color=color.white)
+
+    table.cell(info, 0, 17, "ATR (" + str.tostring(atrLen) + ")", bgcolor=color.new(color.gray, 85), text_color=color.white)
+    table.cell(info, 1, 17, str.tostring(atr, format.mintick), bgcolor=color.new(color.gray, 85), text_color=color.white)
+
+    table.cell(info, 0, 18, "Buy Score",  bgcolor=color.new(color.green, 70), text_color=color.white)
+    table.cell(info, 1, 18, str.tostring(buyScore)  + " / 15",  bgcolor=color.new(color.green, 70), text_color=color.white)
+    table.cell(info, 0, 19, "Sell Score", bgcolor=color.new(color.red, 70),   text_color=color.white)
+    table.cell(info, 1, 19, str.tostring(sellScore) + " / 15", bgcolor=color.new(color.red, 70),   text_color=color.white)
+
+    table.cell(info, 0, 20, "Mode", bgcolor=color.new(color.black, 30), text_color=color.white)
+    table.cell(info, 1, 20, sigMode + " (≥" + str.tostring(reqScore) + ")",
+               bgcolor=color.new(color.black, 30), text_color=color.yellow)
+
+    sigStatus = sniperBuy    ? "🟢★★ SNIPER BUY"  : sniperSell   ? "🔴★★ SNIPER SELL" :
+                amdBuyModel  ? "🟢★ AMD BUY"     : amdSellModel ? "🔴★ AMD SELL"    :
+                ifvgBuyModel ? "🟢★ LS+CISD BUY" : ifvgSellModel? "🔴★ LS+CISD SELL":
+                buySignal    ? "🟢 BUY NOW"      : sellSignal   ? "🔴 SELL NOW"     : "⏳ Wait"
+    sigCol = (buySignal or ifvgBuyModel or sniperBuy or amdBuyModel) ? color.new(color.lime, 0) :
+             (sellSignal or ifvgSellModel or sniperSell or amdSellModel) ? color.new(color.red, 0) : color.new(color.gray, 50)
+    table.cell(info, 0, 21, "Signal", bgcolor=sigCol, text_color=color.white, text_size=size.normal)
+    table.cell(info, 1, 21, sigStatus, bgcolor=sigCol, text_color=color.white, text_size=size.normal)
 
 // ================================ ALERTS =====================================
 alertcondition(buySignal,  title="ICT BUY Signal",  message="ICT+SMC BUY on {{ticker}} @ {{close}}")
 alertcondition(sellSignal, title="ICT SELL Signal", message="ICT+SMC SELL on {{ticker}} @ {{close}}")
 alertcondition(ifvgBuyModel,  title="LS+CISD+FVG BUY",  message="LS+CISD+FVG BUY model on {{ticker}} @ {{close}}")
 alertcondition(ifvgSellModel, title="LS+CISD+FVG SELL", message="LS+CISD+FVG SELL model on {{ticker}} @ {{close}}")
+alertcondition(sniperBuy,  title="★★ Sniper BUY (HTF Sweep+MSS+FVG)",  message="SNIPER BUY on {{ticker}} @ {{close}}")
+alertcondition(sniperSell, title="★★ Sniper SELL (HTF Sweep+MSS+FVG)", message="SNIPER SELL on {{ticker}} @ {{close}}")
+alertcondition(amdBuyModel,  title="AMD BUY",  message="AMD model BUY on {{ticker}} @ {{close}}")
+alertcondition(amdSellModel, title="AMD SELL", message="AMD model SELL on {{ticker}} @ {{close}}")
+alertcondition(mssUp, title="MSS Up",   message="MSS UP on {{ticker}} @ {{close}}")
+alertcondition(mssDn, title="MSS Down", message="MSS DOWN on {{ticker}} @ {{close}}")
+alertcondition(inBullBB, title="Bull Breaker Block Tap", message="Bullish Breaker tap on {{ticker}} @ {{close}}")
+alertcondition(inBearBB, title="Bear Breaker Block Tap", message="Bearish Breaker tap on {{ticker}} @ {{close}}")
 alertcondition(inBullIFVG, title="Bull IFVG Tap", message="Bullish IFVG (CISD) tapped on {{ticker}} @ {{close}}")
 alertcondition(inBearIFVG, title="Bear IFVG Tap", message="Bearish IFVG (CISD) tapped on {{ticker}} @ {{close}}")
+alertcondition(htfSweepHigh, title="HTF High Sweep", message="HTF high swept on {{ticker}} @ {{close}}")
+alertcondition(htfSweepLow,  title="HTF Low Sweep",  message="HTF low swept on {{ticker}} @ {{close}}")
+alertcondition(crtBull, title="CRT Bullish", message="CRT bullish on {{ticker}} @ {{close}}")
+alertcondition(crtBear, title="CRT Bearish", message="CRT bearish on {{ticker}} @ {{close}}")
+alertcondition(tlSweepLow,  title="Trendline Liq (asc)", message="Ascending trendline swept on {{ticker}} @ {{close}}")
+alertcondition(tlSweepHigh, title="Trendline Liq (desc)", message="Descending trendline swept on {{ticker}} @ {{close}}")
 alertcondition(bosUp,    title="BOS Up",    message="BOS UP on {{ticker}} @ {{close}}")
 alertcondition(bosDn,    title="BOS Down",  message="BOS DOWN on {{ticker}} @ {{close}}")
 alertcondition(chochUp,  title="CHoCH Up",  message="CHoCH UP on {{ticker}} @ {{close}}")
